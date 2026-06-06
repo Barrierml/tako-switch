@@ -317,17 +317,16 @@ export function ProviderActions({
 
         {onOpenTerminal && (
           <Button
-            size="sm"
-            variant="outline"
+            size="icon"
+            variant="ghost"
             onClick={onOpenTerminal}
-            title={t("provider.openTerminal", "打开终端")}
+            title={t("provider.launch", "启动")}
             className={cn(
-              "gap-1.5 px-2.5 text-emerald-700 dark:text-emerald-400",
-              "border-emerald-300 hover:bg-emerald-50 dark:border-emerald-800 dark:hover:bg-emerald-950/40",
+              iconButtonClass,
+              "hover:text-emerald-600 dark:hover:text-emerald-400",
             )}
           >
             <Terminal className="h-4 w-4" />
-            {t("provider.launch", "启动")}
           </Button>
         )}
 

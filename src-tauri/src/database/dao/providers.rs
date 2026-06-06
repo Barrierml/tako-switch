@@ -650,7 +650,57 @@ impl Database {
         Ok(inserted)
     }
 
-    /// 按 id 兜底插入单条 official seed（仅当目标表中该 id 不存在时插入）。
+    /// 写入 Tako 内置 provider（每个 app 列表第一位，永久存在）。
+    /// 用独立 flag `tako_provider_seeded`，所以即使官方预设已 seed 过的老库也会补上。
+    /// sort_index = -1000 保证排在所有官方/用户 provider 之前。
+    pub fn init_tako_providers(&self) -> Result<usize, AppError> {
+        use crate::database::dao::providers_seed::TAKO_SEEDS;
+
+        if self.get_bool_flag("tako_provider_seeded").unwrap_or(false) {
+            return Ok(0);
+        }
+
+        let mut inserted = 0_usize;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        for seed in TAKO_SEEDS {
+            let app_type_str = seed.app_type.as_str();
+            if self.get_provider_by_id(seed.id, app_type_str)?.is_some() {
+                continue;
+            }
+            // Push existing providers down so Tako can take sort_index 0 (first).
+            {
+                let conn = lock_conn!(self.conn);
+                conn.execute(
+                    "UPDATE providers SET sort_index = COALESCE(sort_index, 0) + 1 WHERE app_type = ?1",
+                    params![app_type_str],
+                )
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            }
+            let settings_config: serde_json::Value =
+                serde_json::from_str(seed.settings_config_json).map_err(|e| {
+                    AppError::Database(format!("Tako seed JSON parse failed: {e}"))
+                })?;
+            let mut provider = Provider::with_id(
+                seed.id.to_string(),
+                seed.name.to_string(),
+                settings_config,
+                Some(seed.website_url.to_string()),
+            );
+            provider.category = Some("official".to_string());
+            provider.icon = Some(seed.icon.to_string());
+            provider.icon_color = Some(seed.icon_color.to_string());
+            provider.sort_index = Some(0);
+            provider.created_at = Some(now_ms);
+
+            self.save_provider(app_type_str, &provider)?;
+            inserted += 1;
+            log::info!("✓ Seeded Tako provider ({app_type_str})");
+        }
+
+        self.set_setting("tako_provider_seeded", "true")?;
+        Ok(inserted)
+    }
     ///
     /// 与 `init_default_official_providers` 不同：
     /// - 不触碰 `official_providers_seeded` 全局 flag，是 on-demand 修复

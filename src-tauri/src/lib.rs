@@ -560,6 +560,13 @@ pub fn run() {
                 Err(e) => log::warn!("✗ Failed to seed official providers: {e}"),
             }
 
+            // Tako built-in provider — always first in every app list.
+            match app_state.db.init_tako_providers() {
+                Ok(count) if count > 0 => log::info!("✓ Seeded {count} Tako provider(s)"),
+                Ok(_) => {}
+                Err(e) => log::warn!("✗ Failed to seed Tako provider: {e}"),
+            }
+
             {
                 let db_for_codex_history_migration = app_state.db.clone();
                 tauri::async_runtime::spawn_blocking(move || {

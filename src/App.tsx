@@ -26,6 +26,7 @@ import {
   Shield,
   Cpu,
   LayoutDashboard,
+  Terminal,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Provider, VisibleApps } from "@/types";
@@ -982,9 +983,7 @@ function App() {
                       onDuplicate={handleDuplicateProvider}
                       onConfigureUsage={setUsageProvider}
                       onOpenWebsite={handleOpenWebsite}
-                      onOpenTerminal={
-                        activeApp === "claude" ? handleOpenTerminal : undefined
-                      }
+                      onOpenTerminal={handleOpenTerminal}
                       onCreate={() => setIsAddOpen(true)}
                       onSetAsDefault={
                         activeApp === "openclaw"
@@ -994,6 +993,22 @@ function App() {
                             : undefined
                       }
                     />
+                    {currentProviderId && providers[currentProviderId] && (
+                      <div className="sticky bottom-0 -mx-1 mt-2 border-t border-border bg-background/95 px-1 py-3 backdrop-blur">
+                        <Button
+                          size="lg"
+                          className="w-full gap-2"
+                          onClick={() =>
+                            handleOpenTerminal(providers[currentProviderId])
+                          }
+                        >
+                          <Terminal className="h-5 w-5" />
+                          {t("provider.launch", "启动")}
+                          {" · "}
+                          {providers[currentProviderId].name}
+                        </Button>
+                      </div>
+                    )}
                   </motion.div>
                 </AnimatePresence>
               </div>
