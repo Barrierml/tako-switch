@@ -87,11 +87,11 @@ export const providerPresets: ProviderPreset[] = [
     category: "official",
     theme: {
       icon: "generic",
-      backgroundColor: "#5B5BD6",
+      backgroundColor: "#F06858",
       textColor: "#FFFFFF",
     },
-    icon: "generic",
-    iconColor: "#5B5BD6",
+    icon: "tako",
+    iconColor: "#F06858",
   },
   {
     name: "Claude Official",

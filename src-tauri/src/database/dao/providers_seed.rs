@@ -82,8 +82,8 @@ pub(crate) const TAKO_SEEDS: &[OfficialProviderSeed] = &[
         app_type: AppType::Claude,
         name: "Tako",
         website_url: "https://tako.shiroha.tech",
-        icon: "generic",
-        icon_color: "#5B5BD6",
+        icon: "tako",
+        icon_color: "#F06858",
         settings_config_json: r#"{"env":{"ANTHROPIC_BASE_URL":"https://tako.shiroha.tech","ANTHROPIC_AUTH_TOKEN":""}}"#,
     },
     OfficialProviderSeed {
@@ -91,8 +91,8 @@ pub(crate) const TAKO_SEEDS: &[OfficialProviderSeed] = &[
         app_type: AppType::Codex,
         name: "Tako",
         website_url: "https://tako.shiroha.tech",
-        icon: "generic",
-        icon_color: "#5B5BD6",
+        icon: "tako",
+        icon_color: "#F06858",
         settings_config_json: r#"{"auth":{"OPENAI_API_KEY":""},"config":"model_provider = \"tako\"\n\n[model_providers.tako]\nname = \"Tako\"\nbase_url = \"https://tako.shiroha.tech/v1\""}"#,
     },
     OfficialProviderSeed {
@@ -100,8 +100,8 @@ pub(crate) const TAKO_SEEDS: &[OfficialProviderSeed] = &[
         app_type: AppType::Gemini,
         name: "Tako",
         website_url: "https://tako.shiroha.tech",
-        icon: "generic",
-        icon_color: "#5B5BD6",
+        icon: "tako",
+        icon_color: "#F06858",
         settings_config_json: r#"{"env":{"GOOGLE_GEMINI_BASE_URL":"https://tako.shiroha.tech","GEMINI_API_KEY":""},"config":{}}"#,
     },
 ];
