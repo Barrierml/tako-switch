@@ -236,6 +236,60 @@ pub async fn tako_apply_key(
     Ok(result)
 }
 
+/// 读取当前已登录的 cr_ key（claude 的 Tako provider auth 字段），非空返回 Some。
+fn current_tako_key(state: &AppState) -> Option<String> {
+    let provider = state
+        .db
+        .get_provider_by_id(TAKO_PROVIDER_ID, "claude")
+        .ok()
+        .flatten()?;
+    provider.settings_config["env"]["ANTHROPIC_AUTH_TOKEN"]
+        .as_str()
+        .map(str::to_string)
+        .filter(|k| !k.is_empty())
+}
+
+#[derive(Serialize, Default)]
+pub struct TakoIdentity {
+    pub logged_in: bool,
+    pub name: Option<String>,
+    pub plan: Option<String>,
+    /// 有 key 但验证请求失败（如离线）：仍视为已登录，避免网络抖动登出。
+    pub offline: bool,
+}
+
+/// 返回当前登录身份：从 Tako provider 读 key → verify-identity。
+/// 无 key = 未登录；有 key 但网络失败 = 已登录(offline)。
+#[tauri::command]
+pub async fn tako_current_identity(state: State<'_, AppState>) -> Result<TakoIdentity, String> {
+    let Some(key) = current_tako_key(&state) else {
+        return Ok(TakoIdentity::default());
+    };
+    match tako_login(key).await {
+        Ok(r) if r.ok => Ok(TakoIdentity {
+            logged_in: true,
+            name: r.name,
+            plan: r.plan,
+            offline: false,
+        }),
+        // 验证明确失败（key 失效）→ 仍视为已登录但无资料？不：key 失效应判未登录。
+        Ok(_) => Ok(TakoIdentity::default()),
+        // 网络错误 → 有 key，离线视为已登录。
+        Err(_) => Ok(TakoIdentity {
+            logged_in: true,
+            offline: true,
+            ..Default::default()
+        }),
+    }
+}
+
+/// 登出：清空三个 Tako provider 的 auth 字段。
+#[tauri::command]
+pub async fn tako_logout(state: State<'_, AppState>) -> Result<bool, String> {
+    write_key_into_tako_providers(&state, "");
+    Ok(true)
+}
+
 #[derive(Serialize, Default)]
 pub struct TakoUsageWindow {
     pub used: f64,
@@ -453,5 +507,23 @@ mod tests {
         assert_eq!(models[0].name, "claude-opus-4");
         assert_eq!(models[0].clients, vec!["claude"]);
         assert_eq!(models[1].clients, vec!["codex"]);
+    }
+
+    #[test]
+    fn current_key_reflects_login_and_logout() {
+        let db = Arc::new(Database::memory().expect("memory db"));
+        db.init_tako_providers().expect("seed tako providers");
+        let state = AppState::new(db);
+
+        // 未写 key → 未登录。
+        assert!(current_tako_key(&state).is_none());
+
+        // 写 key → 已登录。
+        write_key_into_tako_providers(&state, "cr_abc");
+        assert_eq!(current_tako_key(&state).as_deref(), Some("cr_abc"));
+
+        // 清空（登出）→ 未登录。
+        write_key_into_tako_providers(&state, "");
+        assert!(current_tako_key(&state).is_none());
     }
 }

@@ -100,3 +100,20 @@ export interface TakoModel {
 export async function takoListModels(apiKey: string): Promise<TakoModel[]> {
   return invoke("tako_list_models", { apiKey });
 }
+
+export interface TakoIdentity {
+  logged_in: boolean;
+  name: string | null;
+  plan: string | null;
+  offline: boolean;
+}
+
+/** Current login identity derived from the Tako provider key. */
+export async function takoCurrentIdentity(): Promise<TakoIdentity> {
+  return invoke("tako_current_identity");
+}
+
+/** Log out: clear the cr_ key from all Tako providers. */
+export async function takoLogout(): Promise<boolean> {
+  return invoke("tako_logout");
+}

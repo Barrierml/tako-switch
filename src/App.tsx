@@ -65,6 +65,8 @@ import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LaunchGuideDialog } from "@/components/LaunchGuideDialog";
+import { TakoAuthButton } from "@/components/TakoAuthButton";
+import { LoginPromptDialog } from "@/components/LoginPromptDialog";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { UpdateBadge } from "@/components/UpdateBadge";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
@@ -1283,6 +1285,7 @@ function App() {
           </div>
 
           <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
+            <TakoAuthButton />
             {currentView === "providers" &&
               activeApp !== "opencode" &&
               activeApp !== "openclaw" &&
@@ -1694,6 +1697,7 @@ function App() {
       <DeepLinkImportDialog />
       <FirstRunNoticeDialog />
       <MigrationPromptDialog />
+      <LoginPromptDialog />
     </div>
   );
 }
