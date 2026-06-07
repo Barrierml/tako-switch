@@ -119,6 +119,16 @@ fn claude_settings_path() -> std::path::PathBuf {
     crate::config::get_home_dir().join(".claude").join("settings.json")
 }
 
+/// The command Claude Code runs for the statusline. Points at the Tako Switch
+/// binary itself (`<exe> statusline`) so it works without the Tako CLI.
+fn statusline_command() -> String {
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(String::from))
+        .unwrap_or_else(|| "tako-switch".to_string());
+    format!("\"{exe}\" statusline")
+}
+
 /// Whether the Tako statusline is currently configured in Claude settings.
 #[tauri::command]
 pub async fn tako_statusline_status() -> Result<bool, String> {
@@ -146,7 +156,7 @@ pub async fn tako_statusline_enable() -> Result<bool, String> {
 
     json["statusLine"] = serde_json::json!({
         "type": "command",
-        "command": format!("{REMOTE_BIN} statusline"),
+        "command": statusline_command(),
         "padding": 0,
     });
 

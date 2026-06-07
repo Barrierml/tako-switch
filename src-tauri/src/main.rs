@@ -2,6 +2,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // `tako-switch statusline` — render the Claude Code statusline and exit,
+    // without launching the GUI. Self-contained (no Tako CLI dependency).
+    if std::env::args().nth(1).as_deref() == Some("statusline") {
+        cc_switch_lib::statusline::render_statusline();
+        return;
+    }
+
     // 在 Linux 上设置 WebKit 环境变量以解决 DMA-BUF 渲染问题
     // 某些 Linux 系统（如 Debian 13.2、Nvidia GPU）上 WebKitGTK 的 DMA-BUF 渲染器可能导致白屏/黑屏
     // 参考: https://github.com/tauri-apps/tauri/issues/9394

@@ -8,6 +8,7 @@ mod codex_config;
 mod codex_history_migration;
 mod commands;
 mod config;
+pub mod statusline;
 mod database;
 mod deeplink;
 mod error;

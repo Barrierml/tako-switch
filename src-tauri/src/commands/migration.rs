@@ -11,6 +11,12 @@
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
+use std::str::FromStr;
+use tauri::State;
+
+use crate::app_config::AppType;
+use crate::database::TAKO_PROVIDER_ID;
+use crate::store::AppState;
 
 fn home() -> PathBuf {
     crate::config::get_home_dir()
@@ -105,10 +111,10 @@ pub async fn migration_import_ccswitch() -> Result<bool, String> {
     Ok(true)
 }
 
-/// Read the Tako CLI apiKey from ~/.tako (after user confirms). Returns the
-/// cr_ key so the frontend can establish the Tako login / remote daemon.
+/// Read the Tako CLI apiKey from ~/.tako and write it into the built-in Tako
+/// provider's auth field for each app, so the user is logged in immediately.
 #[tauri::command]
-pub async fn migration_import_tako_cli() -> Result<String, String> {
+pub async fn migration_import_tako_cli(state: State<'_, AppState>) -> Result<String, String> {
     let tako_config = home().join(".tako").join("config.json");
     let text = fs::read_to_string(&tako_config)
         .map_err(|e| format!("Failed to read ~/.tako/config.json: {e}"))?;
@@ -119,6 +125,36 @@ pub async fn migration_import_tako_cli() -> Result<String, String> {
         .and_then(|v| v.as_str())
         .ok_or("No apiKey in Tako config")?
         .to_string();
+
+    // Write the key into the Tako provider of each app.
+    for app in ["claude", "codex", "gemini"] {
+        let app_type = match AppType::from_str(app) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if let Ok(Some(mut provider)) =
+            state.db.get_provider_by_id(TAKO_PROVIDER_ID, app)
+        {
+            let cfg = &mut provider.settings_config;
+            match app {
+                "claude" => {
+                    cfg["env"]["ANTHROPIC_AUTH_TOKEN"] =
+                        serde_json::Value::String(api_key.clone());
+                }
+                "codex" => {
+                    cfg["auth"]["OPENAI_API_KEY"] =
+                        serde_json::Value::String(api_key.clone());
+                }
+                "gemini" => {
+                    cfg["env"]["GEMINI_API_KEY"] =
+                        serde_json::Value::String(api_key.clone());
+                }
+                _ => {}
+            }
+            let _ = state.db.save_provider(app_type.as_str(), &provider);
+        }
+    }
+
     mark_done("tako-cli");
     Ok(api_key)
 }

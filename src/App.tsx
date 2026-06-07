@@ -1041,26 +1041,21 @@ function App() {
     >
       {(dragBarHeight > 0 || useAppWindowControls) && (
         <div
-          className="fixed top-0 left-0 right-0 z-[70] flex items-center justify-between px-2"
+          className="fixed top-0 left-0 right-0 z-[70] flex items-center justify-end px-2"
           data-tauri-drag-region
           style={{ WebkitAppRegion: "drag", height: dragBarHeight } as any}
         >
-          <div
-            className="flex items-center gap-2 pl-1"
-            style={{ WebkitAppRegion: "no-drag" } as any}
-          >
-            <img
-              src={takoTitlebarIcon}
-              alt="Tako Switch"
-              className="h-5 w-5 rounded"
-              draggable={false}
-            />
-          </div>
           {useAppWindowControls && (
             <div
               className="flex items-center gap-1"
               style={{ WebkitAppRegion: "no-drag" } as any}
             >
+              <img
+                src={takoTitlebarIcon}
+                alt="Tako Switch"
+                className="h-5 w-5 rounded mr-1"
+                draggable={false}
+              />
               <Button
                 variant="ghost"
                 size="icon"
