@@ -74,7 +74,7 @@ function formatResetTime(
 }
 
 /** 不需要在 inline 模式显示的 tier */
-const HIDDEN_INLINE_TIERS = new Set(["seven_day_sonnet"]);
+const HIDDEN_INLINE_TIERS = new Set(["seven_day_sonnet", "daily_limit"]);
 
 /** 格式化相对时间（与 UsageFooter 一致） */
 function formatRelativeTime(
