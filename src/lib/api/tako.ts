@@ -51,3 +51,22 @@ export async function takoStatuslineEnable(): Promise<boolean> {
 export async function takoStatuslineDisable(): Promise<boolean> {
   return invoke("tako_statusline_disable");
 }
+
+export interface TakoUsageWindow {
+  used: number;
+  limit: number;
+}
+
+export interface TakoUsage {
+  ok: boolean;
+  window: TakoUsageWindow;
+  daily: TakoUsageWindow;
+  weekly: TakoUsageWindow;
+  plan_name: string | null;
+  error: string | null;
+}
+
+/** Fetch 5h / daily / weekly usage from par for a cr_ key. */
+export async function takoUsage(apiKey: string): Promise<TakoUsage> {
+  return invoke("tako_usage", { apiKey });
+}

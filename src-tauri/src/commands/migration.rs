@@ -213,3 +213,83 @@ pub async fn tako_login(apiKey: String) -> Result<TakoLoginResult, String> {
         })
     }
 }
+
+#[derive(Serialize, Default)]
+pub struct TakoUsageWindow {
+    pub used: f64,
+    pub limit: f64,
+}
+
+#[derive(Serialize, Default)]
+pub struct TakoUsage {
+    pub ok: bool,
+    /// 5-hour rolling window.
+    pub window: TakoUsageWindow,
+    pub daily: TakoUsageWindow,
+    pub weekly: TakoUsageWindow,
+    pub plan_name: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Fetch the user's 5h / daily / weekly usage from par for the given cr_ key.
+/// Flow: get-key-id (key -> apiId) then user-quota (apiId -> usage + limits).
+#[tauri::command]
+pub async fn tako_usage(apiKey: String) -> Result<TakoUsage, String> {
+    let base = "https://tako.shiroha.tech/apiStats/api";
+    let client = reqwest::Client::new();
+
+    // 1. key -> apiId
+    let kid: serde_json::Value = client
+        .post(format!("{base}/get-key-id"))
+        .json(&serde_json::json!({ "apiKey": apiKey }))
+        .send()
+        .await
+        .map_err(|e| format!("network: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("bad get-key-id: {e}"))?;
+    let api_id = kid
+        .get("data")
+        .and_then(|d| d.get("id"))
+        .and_then(|v| v.as_str());
+    let Some(api_id) = api_id else {
+        return Ok(TakoUsage { ok: false, error: Some("Invalid key".into()), ..Default::default() });
+    };
+
+    // 2. apiId -> quota
+    let q: serde_json::Value = client
+        .get(format!("{base}/user-quota?apiId={api_id}"))
+        .send()
+        .await
+        .map_err(|e| format!("network: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("bad user-quota: {e}"))?;
+
+    let usage = q.get("usage");
+    let plan = q.get("plan");
+    let f = |o: Option<&serde_json::Value>, k: &str| {
+        o.and_then(|v| v.get(k)).and_then(|v| v.as_f64()).unwrap_or(0.0)
+    };
+
+    Ok(TakoUsage {
+        ok: true,
+        window: TakoUsageWindow {
+            used: f(usage, "windowCost"),
+            limit: f(plan, "window_cost_limit"),
+        },
+        daily: TakoUsageWindow {
+            used: f(usage, "dailyCost"),
+            limit: f(plan, "daily_cost_limit"),
+        },
+        weekly: TakoUsageWindow {
+            used: f(usage, "weeklyCost"),
+            limit: f(plan, "weekly_cost_limit"),
+        },
+        plan_name: plan
+            .and_then(|p| p.get("name"))
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        error: None,
+    })
+}
