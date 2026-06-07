@@ -1,11 +1,21 @@
 import { useTranslation } from "react-i18next";
 import { useState, useEffect } from "react";
-import { ChevronDown, ChevronRight, FlaskConical, Coins, Terminal } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  FlaskConical,
+  Coins,
+  Terminal,
+  LogIn,
+} from "lucide-react";
 import {
   takoStatuslineStatus,
   takoStatuslineEnable,
   takoStatuslineDisable,
+  takoApplyKey,
 } from "@/lib/api/tako";
+import { startTakoLogin } from "@/lib/takoAuth";
+import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -75,8 +85,109 @@ export function ProviderAdvancedConfig({
     }
   };
 
+  // Tako-only: OAuth 浏览器授权登录 + 手动粘贴兜底。
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteKey, setPasteKey] = useState("");
+
+  const handleBrowserLogin = async () => {
+    setLoggingIn(true);
+    try {
+      const r = await startTakoLogin();
+      if (r.ok) {
+        toast.success(`已登录${r.name ? `：${r.name}` : ""}`);
+      } else {
+        toast.error(r.error || "登录失败");
+      }
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
+  const handlePasteLogin = async () => {
+    const key = pasteKey.trim();
+    if (!key) return;
+    setLoggingIn(true);
+    try {
+      const r = await takoApplyKey(key);
+      if (r.ok) {
+        toast.success(`已登录${r.name ? `：${r.name}` : ""}`);
+        setPasteKey("");
+        setShowPaste(false);
+      } else {
+        toast.error(r.error || "Key 无效");
+      }
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
+      {isTako && (
+        <div className="rounded-lg border border-border/50 bg-muted/20 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <LogIn className="h-4 w-4 text-muted-foreground" />
+              <div>
+                <Label className="text-sm">
+                  {t("providerAdvanced.takoLogin.title", {
+                    defaultValue: "使用 Tako 账号登录",
+                  })}
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  {t("providerAdvanced.takoLogin.description", {
+                    defaultValue: "在浏览器中授权，自动填入 API Key",
+                  })}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={loggingIn}
+              onClick={handleBrowserLogin}
+              className="rounded-lg bg-[var(--app-link)] px-3 py-1.5 text-sm font-medium text-[var(--app-bg)] disabled:opacity-50"
+            >
+              {loggingIn
+                ? t("common.loading", { defaultValue: "处理中…" })
+                : t("providerAdvanced.takoLogin.button", {
+                    defaultValue: "浏览器登录",
+                  })}
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowPaste((v) => !v)}
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            {showPaste
+              ? t("common.collapse", { defaultValue: "收起" })
+              : t("providerAdvanced.takoLogin.pasteToggle", {
+                  defaultValue: "或手动粘贴 API Key",
+                })}
+          </button>
+          {showPaste && (
+            <div className="flex gap-2">
+              <Input
+                value={pasteKey}
+                onChange={(e) => setPasteKey(e.target.value)}
+                placeholder="cr_..."
+                className="flex-1"
+              />
+              <button
+                type="button"
+                disabled={loggingIn || !pasteKey.trim()}
+                onClick={handlePasteLogin}
+                className="rounded-lg border border-input px-3 py-1.5 text-sm disabled:opacity-50"
+              >
+                {t("common.confirm", { defaultValue: "确认" })}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {isTako && (
         <div className="rounded-lg border border-border/50 bg-muted/20 p-4">
           <div className="flex items-center justify-between">

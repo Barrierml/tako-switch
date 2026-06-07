@@ -117,6 +117,23 @@ fn redact_url_for_log(url_str: &str) -> String {
     }
 }
 
+/// 解析 Tako 桌面授权回调深链。
+///
+/// 形如 `takoswitch://v1/import?resource=auth&key=<cr_>&state=<s>`。
+/// 仅当 resource=auth 且 key 非空时返回 `Some((key, state))`，否则 None
+/// （让调用方回退到常规 provider import 解析）。
+fn parse_auth_deeplink(url_str: &str) -> Option<(String, Option<String>)> {
+    let url = url::Url::parse(url_str).ok()?;
+    let params: std::collections::HashMap<String, String> =
+        url.query_pairs().into_owned().collect();
+    if params.get("resource").map(String::as_str) != Some("auth") {
+        return None;
+    }
+    let key = params.get("key").filter(|k| !k.is_empty())?.clone();
+    let state = params.get("state").filter(|s| !s.is_empty()).cloned();
+    Some((key, state))
+}
+
 /// 统一处理 takoswitch:// 深链接 URL
 ///
 /// - 解析 URL
@@ -135,6 +152,30 @@ fn handle_deeplink_url(
     let redacted_url = redact_url_for_log(url_str);
     log::info!("✓ Deep link URL detected from {source}: {redacted_url}");
     log::debug!("Deep link URL (raw) from {source}: {url_str}");
+
+    // Tako 桌面授权回调：resource=auth。不走 provider import flow，
+    // 发独立 `tako-auth` 事件，由前端校验 state 并写入 Tako provider。
+    if let Some((key, state)) = parse_auth_deeplink(url_str) {
+        log::info!("✓ Tako auth deep link detected (state present: {})", state.is_some());
+        if let Err(e) = app.emit(
+            "tako-auth",
+            serde_json::json!({ "key": key, "state": state }),
+        ) {
+            log::error!("✗ Failed to emit tako-auth event: {e}");
+        }
+        if focus_main_window {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+                #[cfg(target_os = "linux")]
+                {
+                    linux_fix::nudge_main_window(window.clone());
+                }
+            }
+        }
+        return true;
+    }
 
     match crate::deeplink::parse_deeplink_url(url_str) {
         Ok(request) => {
@@ -1143,6 +1184,7 @@ pub fn run() {
             commands::migration_import_ccswitch,
             commands::migration_import_tako_cli,
             commands::tako_login,
+            commands::tako_apply_key,
             commands::tako_usage,
             commands::get_providers,
             commands::get_current_provider,
@@ -1901,5 +1943,40 @@ pub fn save_window_state_before_exit(app_handle: &tauri::AppHandle) {
         log::error!("退出前保存窗口状态失败: {err}");
     } else {
         log::info!("已在退出前保存窗口状态");
+    }
+}
+
+#[cfg(test)]
+mod auth_deeplink_tests {
+    use super::parse_auth_deeplink;
+
+    #[test]
+    fn parses_key_and_state() {
+        let url = "takoswitch://v1/import?resource=auth&key=cr_abc123&state=s-xyz";
+        let (key, state) = parse_auth_deeplink(url).expect("should parse");
+        assert_eq!(key, "cr_abc123");
+        assert_eq!(state.as_deref(), Some("s-xyz"));
+    }
+
+    #[test]
+    fn parses_without_state() {
+        let url = "takoswitch://v1/import?resource=auth&key=cr_abc123";
+        let (key, state) = parse_auth_deeplink(url).expect("should parse");
+        assert_eq!(key, "cr_abc123");
+        assert_eq!(state, None);
+    }
+
+    #[test]
+    fn rejects_non_auth_resource() {
+        let url = "takoswitch://v1/import?resource=provider&key=cr_x";
+        assert!(parse_auth_deeplink(url).is_none());
+    }
+
+    #[test]
+    fn rejects_missing_or_empty_key() {
+        assert!(parse_auth_deeplink("takoswitch://v1/import?resource=auth").is_none());
+        assert!(
+            parse_auth_deeplink("takoswitch://v1/import?resource=auth&key=").is_none()
+        );
     }
 }

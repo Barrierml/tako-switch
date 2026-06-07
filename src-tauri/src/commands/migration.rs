@@ -127,36 +127,44 @@ pub async fn migration_import_tako_cli(state: State<'_, AppState>) -> Result<Str
         .to_string();
 
     // Write the key into the Tako provider of each app.
+    write_key_into_tako_providers(&state, &api_key);
+
+    mark_done("tako-cli");
+    Ok(api_key)
+}
+
+/// 把 cr_ key 写进 claude/codex/gemini 三个内置 Tako provider 的 auth 字段。
+/// 迁移导入与 OAuth 授权回调共用此逻辑。返回成功写入的 app 数。
+pub(crate) fn write_key_into_tako_providers(state: &AppState, api_key: &str) -> usize {
+    let mut written = 0usize;
     for app in ["claude", "codex", "gemini"] {
         let app_type = match AppType::from_str(app) {
             Ok(t) => t,
             Err(_) => continue,
         };
-        if let Ok(Some(mut provider)) =
-            state.db.get_provider_by_id(TAKO_PROVIDER_ID, app)
-        {
+        if let Ok(Some(mut provider)) = state.db.get_provider_by_id(TAKO_PROVIDER_ID, app) {
             let cfg = &mut provider.settings_config;
             match app {
                 "claude" => {
                     cfg["env"]["ANTHROPIC_AUTH_TOKEN"] =
-                        serde_json::Value::String(api_key.clone());
+                        serde_json::Value::String(api_key.to_string());
                 }
                 "codex" => {
                     cfg["auth"]["OPENAI_API_KEY"] =
-                        serde_json::Value::String(api_key.clone());
+                        serde_json::Value::String(api_key.to_string());
                 }
                 "gemini" => {
                     cfg["env"]["GEMINI_API_KEY"] =
-                        serde_json::Value::String(api_key.clone());
+                        serde_json::Value::String(api_key.to_string());
                 }
                 _ => {}
             }
-            let _ = state.db.save_provider(app_type.as_str(), &provider);
+            if state.db.save_provider(app_type.as_str(), &provider).is_ok() {
+                written += 1;
+            }
         }
     }
-
-    mark_done("tako-cli");
-    Ok(api_key)
+    written
 }
 
 #[derive(Serialize, Default)]
@@ -212,6 +220,20 @@ pub async fn tako_login(apiKey: String) -> Result<TakoLoginResult, String> {
             ..Default::default()
         })
     }
+}
+
+/// OAuth 授权回调落地：验证 cr_ key，通过后写入三个 Tako provider。
+/// 由前端在收到 `tako-auth` 深链事件并校验 state 后调用。
+#[tauri::command]
+pub async fn tako_apply_key(
+    state: State<'_, AppState>,
+    api_key: String,
+) -> Result<TakoLoginResult, String> {
+    let result = tako_login(api_key.clone()).await?;
+    if result.ok {
+        write_key_into_tako_providers(&state, &api_key);
+    }
+    Ok(result)
 }
 
 #[derive(Serialize, Default)]
@@ -292,4 +314,52 @@ pub async fn tako_usage(apiKey: String) -> Result<TakoUsage, String> {
             .map(String::from),
         error: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::Database;
+    use std::sync::Arc;
+
+    /// 授权回调 / 迁移共用的写入逻辑：cr_ key 必须落进三个 Tako provider 的 auth 字段。
+    #[test]
+    fn write_key_lands_in_all_tako_providers() {
+        let db = Arc::new(Database::memory().expect("memory db"));
+        db.init_tako_providers().expect("seed tako providers");
+        let state = AppState::new(db);
+
+        let written = write_key_into_tako_providers(&state, "cr_secret123");
+        assert_eq!(written, 3, "should write claude/codex/gemini");
+
+        let claude = state
+            .db
+            .get_provider_by_id(TAKO_PROVIDER_ID, "claude")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            claude.settings_config["env"]["ANTHROPIC_AUTH_TOKEN"],
+            "cr_secret123"
+        );
+
+        let codex = state
+            .db
+            .get_provider_by_id(TAKO_PROVIDER_ID, "codex")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            codex.settings_config["auth"]["OPENAI_API_KEY"],
+            "cr_secret123"
+        );
+
+        let gemini = state
+            .db
+            .get_provider_by_id(TAKO_PROVIDER_ID, "gemini")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            gemini.settings_config["env"]["GEMINI_API_KEY"],
+            "cr_secret123"
+        );
+    }
 }

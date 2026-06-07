@@ -70,3 +70,20 @@ export interface TakoUsage {
 export async function takoUsage(apiKey: string): Promise<TakoUsage> {
   return invoke("tako_usage", { apiKey });
 }
+
+export interface TakoLoginResult {
+  ok: boolean;
+  name: string | null;
+  plan: string | null;
+  error: string | null;
+}
+
+/** Validate a cr_ key against par (no side effects). */
+export async function takoLogin(apiKey: string): Promise<TakoLoginResult> {
+  return invoke("tako_login", { apiKey });
+}
+
+/** Validate a cr_ key and, on success, write it into all Tako providers. */
+export async function takoApplyKey(apiKey: string): Promise<TakoLoginResult> {
+  return invoke("tako_apply_key", { apiKey });
+}
