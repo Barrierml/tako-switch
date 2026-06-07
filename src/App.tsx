@@ -64,6 +64,7 @@ import { ProviderList } from "@/components/providers/ProviderList";
 import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { LaunchGuideDialog } from "@/components/LaunchGuideDialog";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { UpdateBadge } from "@/components/UpdateBadge";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
@@ -599,6 +600,18 @@ function App() {
   }, []);
 
   const [launchDashboardOpen, setLaunchDashboardOpen] = useState(false);
+  const [launchGuide, setLaunchGuide] = useState<{
+    appId: string;
+    broken: boolean;
+  } | null>(null);
+  // 首次启动引导：高亮底部启动按钮，点击或关闭后不再提示。
+  const [launchHintDismissed, setLaunchHintDismissed] = useState(
+    () => localStorage.getItem("tako_launch_hint_dismissed") === "1",
+  );
+  const dismissLaunchHint = () => {
+    localStorage.setItem("tako_launch_hint_dismissed", "1");
+    setLaunchHintDismissed(true);
+  };
   const openHermesWebUI = useOpenHermesWebUI(() =>
     setLaunchDashboardOpen(true),
   );
@@ -777,6 +790,25 @@ function App() {
 
   const handleOpenTerminal = async (provider: Provider) => {
     try {
+      // 启动前检测目标 CLI 是否已安装（仅 claude/codex/gemini）；
+      // 未装/损坏则弹安装引导，不直接报错。
+      if (["claude", "codex", "gemini"].includes(activeApp)) {
+        try {
+          const versions = await settingsApi.getToolVersions([activeApp]);
+          const tool = versions.find((v) => v.name === activeApp);
+          if (tool && (!tool.version || tool.installed_but_broken)) {
+            setLaunchGuide({
+              appId: activeApp,
+              broken: tool.installed_but_broken,
+            });
+            return;
+          }
+        } catch (e) {
+          // 检测失败不阻断启动，让后续流程照常（最坏退回原报错）。
+          console.warn("[App] tool version probe failed", e);
+        }
+      }
+
       const selectedDir = await settingsApi.pickDirectory();
       if (!selectedDir) {
         return;
@@ -998,16 +1030,32 @@ function App() {
                       <div className="sticky bottom-0 -mx-1 mt-2 border-t border-border bg-background/95 px-1 py-3 backdrop-blur">
                         <Button
                           size="lg"
-                          className="w-full gap-2"
-                          onClick={() =>
-                            handleOpenTerminal(providers[currentProviderId])
-                          }
+                          className={cn(
+                            "w-full gap-2",
+                            !launchHintDismissed &&
+                              "ring-2 ring-[var(--app-link)] ring-offset-2 ring-offset-background animate-pulse",
+                          )}
+                          onClick={() => {
+                            dismissLaunchHint();
+                            handleOpenTerminal(providers[currentProviderId]);
+                          }}
                         >
                           <Terminal className="h-5 w-5" />
                           {t("provider.launch", "启动")}
                           {" · "}
                           {providers[currentProviderId].name}
                         </Button>
+                        <p className="mt-1.5 text-center text-xs text-muted-foreground">
+                          {!launchHintDismissed
+                            ? t("provider.launchHintFirst", {
+                                defaultValue:
+                                  "点这里启动：将在终端打开并自动注入当前服务商配置",
+                              })
+                            : t("provider.launchHint", {
+                                defaultValue:
+                                  "将在终端启动并自动注入当前服务商配置",
+                              })}
+                        </p>
                       </div>
                     )}
                   </motion.div>
@@ -1611,6 +1659,15 @@ function App() {
         onConfirm={() => void handleConfirmAction()}
         onCancel={() => setConfirmAction(null)}
       />
+
+      {launchGuide && (
+        <LaunchGuideDialog
+          isOpen={true}
+          appId={launchGuide.appId}
+          broken={launchGuide.broken}
+          onClose={() => setLaunchGuide(null)}
+        />
+      )}
 
       <ConfirmDialog
         isOpen={launchDashboardOpen}

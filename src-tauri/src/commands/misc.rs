@@ -2408,7 +2408,7 @@ pub async fn open_provider_terminal(
     let env_vars = extract_env_vars_from_config(config, &app_type);
 
     // 根据平台启动终端，传入提供商ID用于生成唯一的配置文件名
-    launch_terminal_with_env(env_vars, &providerId, launch_cwd.as_deref())
+    launch_terminal_with_env(env_vars, &providerId, &app_type, launch_cwd.as_deref())
         .map_err(|e| format!("启动终端失败: {e}"))?;
 
     Ok(true)
@@ -2506,6 +2506,7 @@ fn resolve_launch_cwd(cwd: Option<String>) -> Result<Option<PathBuf>, String> {
 fn launch_terminal_with_env(
     env_vars: Vec<(String, String)>,
     provider_id: &str,
+    app_type: &AppType,
     cwd: Option<&Path>,
 ) -> Result<(), String> {
     let temp_dir = std::env::temp_dir();
@@ -2520,19 +2521,19 @@ fn launch_terminal_with_env(
 
     #[cfg(target_os = "macos")]
     {
-        launch_macos_terminal(&config_file, cwd)?;
+        launch_macos_terminal(&config_file, app_type, &env_vars, cwd)?;
         Ok(())
     }
 
     #[cfg(target_os = "linux")]
     {
-        launch_linux_terminal(&config_file, cwd)?;
+        launch_linux_terminal(&config_file, app_type, &env_vars, cwd)?;
         Ok(())
     }
 
     #[cfg(target_os = "windows")]
     {
-        launch_windows_terminal(&temp_dir, &config_file, cwd)?;
+        launch_windows_terminal(&temp_dir, &config_file, app_type, &env_vars, cwd)?;
         return Ok(());
     }
 
@@ -2562,7 +2563,12 @@ fn write_claude_config(
 
 /// macOS: 根据用户首选终端启动
 #[cfg(target_os = "macos")]
-fn launch_macos_terminal(config_file: &std::path::Path, cwd: Option<&Path>) -> Result<(), String> {
+fn launch_macos_terminal(
+    config_file: &std::path::Path,
+    app_type: &AppType,
+    env_vars: &[(String, String)],
+    cwd: Option<&Path>,
+) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
     let preferred = crate::settings::get_preferred_terminal();
@@ -2572,20 +2578,20 @@ fn launch_macos_terminal(config_file: &std::path::Path, cwd: Option<&Path>) -> R
     let script_file = temp_dir.join(format!("cc_switch_launcher_{}.sh", std::process::id()));
     let config_path = config_file.to_string_lossy();
     let cd_command = build_shell_cd_command(cwd);
+    let launch_body = build_unix_launch_body(app_type, &config_path, env_vars);
 
     // Write the shell script to a temp file
     let script_content = format!(
         r#"#!/bin/bash
 trap 'rm -f "{config_path}" "{script_file}"' EXIT
 {cd_command}
-echo "Using provider-specific claude config:"
-echo "{config_path}"
-claude --settings "{config_path}"
+{launch_body}
 exec bash --norc --noprofile
 "#,
         config_path = config_path,
         script_file = script_file.display(),
         cd_command = cd_command,
+        launch_body = launch_body,
     );
 
     std::fs::write(&script_file, &script_content).map_err(|e| format!("写入启动脚本失败: {e}"))?;
@@ -2829,7 +2835,12 @@ fn launch_macos_warp(script_file: &std::path::Path) -> Result<(), String> {
 
 /// Linux: 根据用户首选终端启动
 #[cfg(target_os = "linux")]
-fn launch_linux_terminal(config_file: &std::path::Path, cwd: Option<&Path>) -> Result<(), String> {
+fn launch_linux_terminal(
+    config_file: &std::path::Path,
+    app_type: &AppType,
+    env_vars: &[(String, String)],
+    cwd: Option<&Path>,
+) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
@@ -2852,19 +2863,19 @@ fn launch_linux_terminal(config_file: &std::path::Path, cwd: Option<&Path>) -> R
     let script_file = temp_dir.join(format!("cc_switch_launcher_{}.sh", std::process::id()));
     let config_path = config_file.to_string_lossy();
     let cd_command = build_shell_cd_command(cwd);
+    let launch_body = build_unix_launch_body(app_type, &config_path, env_vars);
 
     let script_content = format!(
         r#"#!/bin/bash
 trap 'rm -f "{config_path}" "{script_file}"' EXIT
 {cd_command}
-echo "Using provider-specific claude config:"
-echo "{config_path}"
-claude --settings "{config_path}"
+{launch_body}
 exec bash --norc --noprofile
 "#,
         config_path = config_path,
         script_file = script_file.display(),
         cd_command = cd_command,
+        launch_body = launch_body,
     );
 
     std::fs::write(&script_file, &script_content).map_err(|e| format!("写入启动脚本失败: {e}"))?;
@@ -2943,6 +2954,8 @@ fn which_command(cmd: &str) -> bool {
 fn launch_windows_terminal(
     temp_dir: &std::path::Path,
     config_file: &std::path::Path,
+    app_type: &AppType,
+    env_vars: &[(String, String)],
     cwd: Option<&Path>,
 ) -> Result<(), String> {
     let preferred = crate::settings::get_preferred_terminal();
@@ -2951,20 +2964,19 @@ fn launch_windows_terminal(
     let bat_file = temp_dir.join(format!("cc_switch_claude_{}.bat", std::process::id()));
     let config_path_for_batch = escape_windows_batch_value(&config_file.to_string_lossy());
     let cwd_command = build_windows_cwd_command(cwd);
+    let launch_body =
+        build_windows_launch_body(app_type, &config_file.to_string_lossy(), env_vars);
 
     let content = format!(
         "@echo off
 {cwd_command}
-echo Using provider-specific claude config:
-echo {}
-claude --settings \"{}\"
-del \"{}\" >nul 2>&1
+{launch_body}
+del \"{cfg}\" >nul 2>&1
 del \"%~f0\" >nul 2>&1
 ",
-        config_path_for_batch,
-        config_path_for_batch,
-        config_path_for_batch,
         cwd_command = cwd_command,
+        launch_body = launch_body,
+        cfg = config_path_for_batch,
     );
 
     std::fs::write(&bat_file, &content).map_err(|e| format!("写入批处理文件失败: {e}"))?;
@@ -3009,6 +3021,39 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+/// 按 app 生成终端启动脚本的「CLI 调用」段（bash）。
+///
+/// - claude：通过 `--settings <config>` 注入服务商配置（CLI 原生支持）
+/// - codex / gemini：CLI 无 settings 文件入口，改为 `export` 环境变量后直接运行
+///
+/// 所有动态值经 `shell_single_quote` 转义，防止注入。
+fn build_unix_launch_body(
+    app_type: &AppType,
+    config_path: &str,
+    env_vars: &[(String, String)],
+) -> String {
+    match app_type {
+        AppType::Claude | AppType::ClaudeDesktop => format!(
+            "echo \"Using provider-specific claude config:\"\necho {q}\nclaude --settings {q}\n",
+            q = shell_single_quote(config_path),
+        ),
+        AppType::Codex | AppType::Gemini => {
+            let cli = if matches!(app_type, AppType::Codex) {
+                "codex"
+            } else {
+                "gemini"
+            };
+            let mut body = String::new();
+            for (k, v) in env_vars {
+                body.push_str(&format!("export {k}={}\n", shell_single_quote(v)));
+            }
+            body.push_str(&format!("echo \"Launching {cli} with Tako provider config…\"\n{cli}\n"));
+            body
+        }
+        _ => format!("echo \"Unsupported app for launch: {}\"\n", app_type.as_str()),
+    }
+}
+
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn is_windows_unc_path(path: &str) -> bool {
     path.starts_with(r"\\")
@@ -3044,6 +3089,37 @@ fn escape_windows_batch_value(value: &str) -> String {
         .replace('(', "^(")
         .replace(')', "^)")
 }
+
+/// 按 app 生成 Windows 批处理的「CLI 调用」段。
+/// claude 用 `--settings`；codex/gemini 用 `set KEY=VAL` 后运行 CLI。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn build_windows_launch_body(
+    app_type: &AppType,
+    config_path: &str,
+    env_vars: &[(String, String)],
+) -> String {
+    let cfg = escape_windows_batch_value(config_path);
+    match app_type {
+        AppType::Claude | AppType::ClaudeDesktop => format!(
+            "echo Using provider-specific claude config:\r\necho {cfg}\r\nclaude --settings \"{cfg}\"\r\n",
+        ),
+        AppType::Codex | AppType::Gemini => {
+            let cli = if matches!(app_type, AppType::Codex) {
+                "codex"
+            } else {
+                "gemini"
+            };
+            let mut body = String::new();
+            for (k, v) in env_vars {
+                body.push_str(&format!("set {k}={}\r\n", escape_windows_batch_value(v)));
+            }
+            body.push_str(&format!("echo Launching {cli} with Tako provider config...\r\n{cli}\r\n"));
+            body
+        }
+        _ => format!("echo Unsupported app for launch: {}\r\n", app_type.as_str()),
+    }
+}
+
 /// Windows: Run a start command with common error handling
 #[cfg(target_os = "windows")]
 fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), String> {
@@ -4654,6 +4730,38 @@ mod tests {
         let command = build_shell_cd_command(Some(Path::new("/tmp/project O'Brien")));
 
         assert_eq!(command, "cd '/tmp/project O'\"'\"'Brien' || exit 1\n");
+    }
+
+    #[test]
+    fn unix_launch_body_claude_uses_settings_flag() {
+        let body = build_unix_launch_body(&AppType::Claude, "/tmp/c.json", &[]);
+        assert!(body.contains("claude --settings '/tmp/c.json'"));
+        assert!(!body.contains("export "));
+    }
+
+    #[test]
+    fn unix_launch_body_codex_exports_env_then_runs_cli() {
+        let env = vec![("OPENAI_API_KEY".to_string(), "cr_x".to_string())];
+        let body = build_unix_launch_body(&AppType::Codex, "/tmp/c.json", &env);
+        assert!(body.contains("export OPENAI_API_KEY='cr_x'"));
+        assert!(body.trim_end().ends_with("codex"));
+        assert!(!body.contains("claude --settings"));
+    }
+
+    #[test]
+    fn unix_launch_body_gemini_runs_gemini() {
+        let env = vec![("GEMINI_API_KEY".to_string(), "k".to_string())];
+        let body = build_unix_launch_body(&AppType::Gemini, "/tmp/c.json", &env);
+        assert!(body.contains("export GEMINI_API_KEY='k'"));
+        assert!(body.trim_end().ends_with("gemini"));
+    }
+
+    #[test]
+    fn unix_launch_body_escapes_single_quotes_in_env() {
+        let env = vec![("K".to_string(), "a'b".to_string())];
+        let body = build_unix_launch_body(&AppType::Codex, "/tmp/c.json", &env);
+        // 单引号被安全转义，不会逃逸出引号串。
+        assert!(body.contains("export K='a'\"'\"'b'"));
     }
 
     #[cfg(target_os = "macos")]
