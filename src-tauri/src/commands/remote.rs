@@ -16,6 +16,8 @@ use crypto_box::{
     aead::{Aead},
     PublicKey, SalsaBox, SecretKey,
 };
+use ed25519_dalek::{Signer, SigningKey};
+use sha2::{Digest, Sha256};
 use std::process::Stdio;
 use tauri::State;
 use tokio::process::Command;
@@ -98,6 +100,62 @@ async fn is_daemon_running() -> bool {
     matches!(cmd.status().await, Ok(s) if s.success())
 }
 
+/// Derive a STABLE 32-byte happy account secret from the Tako cr_ key, so one
+/// Tako user always maps to one happy account (global login state). The account
+/// identity = Ed25519 keypair seeded by this secret; the same bytes double as
+/// the legacy E2E secret (matching happy's account-secret model).
+fn derive_account_secret(tako_key: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"tako-switch/happy-account/v1");
+    hasher.update(tako_key.as_bytes());
+    hasher.finalize().into()
+}
+
+/// Register (or refresh) the happy account for this Tako user via `/v1/auth`,
+/// returning the bearer token. Ed25519 work is confined to a sync scope so no
+/// signing types are held across the await.
+async fn register_account(
+    client: &reqwest::Client,
+    tako_key: &str,
+    account_secret: &[u8; 32],
+) -> Result<String, String> {
+    let (public_b64, challenge_b64, signature_b64) = {
+        let signing = SigningKey::from_bytes(account_secret);
+        let verifying = signing.verifying_key();
+        let challenge: [u8; 32] = rand::random();
+        let signature = signing.sign(&challenge);
+        (
+            b64().encode(verifying.to_bytes()),
+            b64().encode(challenge),
+            b64().encode(signature.to_bytes()),
+        )
+    };
+
+    let resp: serde_json::Value = client
+        .post(format!("{TAKO_SERVER_URL}/v1/auth"))
+        .header("X-Happy-Client", CLI_VERSION_HEADER)
+        .header("X-Tako-Key", tako_key)
+        .json(&serde_json::json!({
+            "publicKey": public_b64,
+            "challenge": challenge_b64,
+            "signature": signature_b64,
+            "takoKey": tako_key,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Account registration failed: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("Tako membership rejected: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Bad /v1/auth response: {e}"))?;
+
+    resp.get("token")
+        .and_then(|t| t.as_str())
+        .map(String::from)
+        .ok_or_else(|| "Registration returned no token".to_string())
+}
+
 /// Result of starting the auth handshake: the web URL to render as a QR code
 /// (and open in a browser), plus the ephemeral keypair the frontend holds and
 /// passes back into `remote_auth_poll`. The secret never touches disk until
@@ -119,11 +177,18 @@ pub async fn remote_auth_begin(state: State<'_, AppState>) -> Result<RemoteAuthB
     let tako_key = current_tako_key(&state)
         .ok_or("Please log in to Tako first (no cr_ key found)")?;
 
+    let client = reqwest::Client::new();
+
+    // (1) Tako identity -> stable happy account token.
+    let account_secret = derive_account_secret(&tako_key);
+    log::info!("[remote] auth_begin: registering happy account from Tako key");
+    let account_token = register_account(&client, &tako_key, &account_secret).await?;
+
+    // (2) Ephemeral terminal keypair, registered for authorization.
     let secret = SecretKey::generate(&mut rand::thread_rng());
     let public = secret.public_key();
     let public_b64 = b64().encode(public.as_bytes());
 
-    let client = reqwest::Client::new();
     client
         .post(format!("{TAKO_SERVER_URL}/v1/auth/request"))
         .header("X-Happy-Client", CLI_VERSION_HEADER)
@@ -135,9 +200,16 @@ pub async fn remote_auth_begin(state: State<'_, AppState>) -> Result<RemoteAuthB
         .error_for_status()
         .map_err(|e| format!("Server rejected auth request: {e}"))?;
 
+    // (3) Authorize URL: terminal key + cred ticket (Tako-derived login state),
+    // so the webapp opens already logged in as the Tako identity.
+    let cred = serde_json::json!({
+        "token": account_token,
+        "secret": b64url_nopad(&account_secret),
+    });
     let web_url = format!(
-        "{TAKO_WEBAPP_URL}/terminal/connect#key={}",
-        b64url_nopad(public.as_bytes())
+        "{TAKO_WEBAPP_URL}/terminal/connect#key={}&cred={}",
+        b64url_nopad(public.as_bytes()),
+        b64url_nopad(cred.to_string().as_bytes()),
     );
     Ok(RemoteAuthBegin {
         web_url,

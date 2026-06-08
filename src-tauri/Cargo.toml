@@ -84,6 +84,9 @@ json-five = "0.3.1"
 # to复刻 happy CLI 的 web-auth 握手 (POST /v1/auth/request → 轮询 → 解密 access.key)。
 crypto_box = { version = "0.9", features = ["std"] }
 rand = "0.8"
+# Ed25519 account-identity signing for the happy /v1/auth registration (#47):
+# derive a stable account from the Tako cr_ key so one Tako user == one happy account.
+ed25519-dalek = "2"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
@@ -98,6 +101,10 @@ windows-sys = { version = "0.61", features = ["Win32_Globalization", "Win32_UI_S
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 objc2-app-kit = { version = "0.2", features = ["NSColor"] }
+
+# kill(pid, 0) liveness probe for the remote daemon (avoids spawning the CLI).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # Optimize release binary size to help reduce AppImage footprint
 [profile.release]
