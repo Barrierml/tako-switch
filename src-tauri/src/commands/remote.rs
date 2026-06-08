@@ -17,7 +17,11 @@ use crypto_box::{
     PublicKey, SalsaBox, SecretKey,
 };
 use std::process::Stdio;
+use tauri::State;
 use tokio::process::Command;
+
+use crate::commands::migration::current_tako_key;
+use crate::store::AppState;
 
 const TAKO_SERVER_URL: &str = "https://happy.shiroha.tech";
 const TAKO_WEBAPP_URL: &str = "https://happy-remote.shiroha.tech";
@@ -107,13 +111,14 @@ pub struct RemoteAuthBegin {
 
 /// Step 1 — start the web-auth handshake (复刻 happy `doAuth`/`doWebAuth`).
 /// Generates an ephemeral NaCl box keypair, registers the public key with the
-/// server, and returns the URL the user scans/opens to authorize. `tako_key`
-/// (the active cr_ key) gates membership via `X-Tako-Key`.
+/// server, and returns the URL the user scans/opens to authorize. The active
+/// Tako cr_ key (read from the built-in provider) gates membership via
+/// `X-Tako-Key` — so the user must be logged in first.
 #[tauri::command]
-pub async fn remote_auth_begin(takoKey: String) -> Result<RemoteAuthBegin, String> {
-    if takoKey.trim().is_empty() {
-        return Err("Tako key is required to start remote control".into());
-    }
+pub async fn remote_auth_begin(state: State<'_, AppState>) -> Result<RemoteAuthBegin, String> {
+    let tako_key = current_tako_key(&state)
+        .ok_or("Please log in to Tako first (no cr_ key found)")?;
+
     let secret = SecretKey::generate(&mut rand::thread_rng());
     let public = secret.public_key();
     let public_b64 = b64().encode(public.as_bytes());
@@ -122,7 +127,7 @@ pub async fn remote_auth_begin(takoKey: String) -> Result<RemoteAuthBegin, Strin
     client
         .post(format!("{TAKO_SERVER_URL}/v1/auth/request"))
         .header("X-Happy-Client", CLI_VERSION_HEADER)
-        .header("X-Tako-Key", &takoKey)
+        .header("X-Tako-Key", &tako_key)
         .json(&serde_json::json!({ "publicKey": public_b64, "supportsV2": true }))
         .send()
         .await

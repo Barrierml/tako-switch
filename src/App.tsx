@@ -27,6 +27,7 @@ import {
   Cpu,
   LayoutDashboard,
   Terminal,
+  MonitorSmartphone,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Provider, VisibleApps } from "@/types";
@@ -81,6 +82,7 @@ import UnifiedSkillsPanel from "@/components/skills/UnifiedSkillsPanel";
 import { DeepLinkImportDialog } from "@/components/DeepLinkImportDialog";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { MigrationPromptDialog } from "@/components/MigrationPromptDialog";
+import { RemotePanel } from "@/components/remote/RemotePanel";
 import { AgentsPanel } from "@/components/agents/AgentsPanel";
 import { UniversalProviderPanel } from "@/components/universal";
 import { McpIcon } from "@/components/BrandIcons";
@@ -111,7 +113,8 @@ type View =
   | "openclawEnv"
   | "openclawTools"
   | "openclawAgents"
-  | "hermesMemory";
+  | "hermesMemory"
+  | "remote";
 
 interface SyncStatusUpdatedPayload {
   source?: string;
@@ -157,6 +160,7 @@ const VALID_VIEWS: View[] = [
   "openclawTools",
   "openclawAgents",
   "hermesMemory",
+  "remote",
 ];
 
 const getInitialView = (): View => {
@@ -917,6 +921,8 @@ function App() {
           );
         case "hermesMemory":
           return <HermesMemoryPanel />;
+        case "remote":
+          return <RemotePanel />;
         case "skills":
           return (
             <UnifiedSkillsPanel
@@ -1227,6 +1233,7 @@ function App() {
                   {currentView === "openclawAgents" &&
                     t("openclaw.agents.title")}
                   {currentView === "hermesMemory" && t("hermes.memory.title")}
+                  {currentView === "remote" && t("remote.title")}
                 </h1>
               </div>
             ) : (
@@ -1568,6 +1575,15 @@ function App() {
                                 title={t("sessionManager.title")}
                               >
                                 <History className="flex-shrink-0 w-4 h-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setCurrentView("remote")}
+                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
+                                title={t("remote.title")}
+                              >
+                                <MonitorSmartphone className="w-4 h-4" />
                               </Button>
                               <Button
                                 variant="ghost"

@@ -237,7 +237,7 @@ pub async fn tako_apply_key(
 }
 
 /// 读取当前已登录的 cr_ key（claude 的 Tako provider auth 字段），非空返回 Some。
-fn current_tako_key(state: &AppState) -> Option<String> {
+pub(crate) fn current_tako_key(state: &AppState) -> Option<String> {
     let provider = state
         .db
         .get_provider_by_id(TAKO_PROVIDER_ID, "claude")

@@ -26,9 +26,10 @@ export async function remoteStatus(): Promise<RemoteStatus> {
   return invoke("remote_status");
 }
 
-/** Step 1: register an ephemeral keypair, get the URL to scan/open. */
-export async function remoteAuthBegin(takoKey: string): Promise<RemoteAuthBegin> {
-  return invoke("remote_auth_begin", { takoKey });
+/** Step 1: register an ephemeral keypair, get the URL to scan/open. The active
+ * cr_ key is read backend-side from the Tako provider (user must be logged in). */
+export async function remoteAuthBegin(): Promise<RemoteAuthBegin> {
+  return invoke("remote_auth_begin");
 }
 
 /** Step 2: poll once for authorization. On `authorized`, credentials are
