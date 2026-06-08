@@ -80,6 +80,10 @@ sha2 = "0.10"
 hmac = "0.12"
 json5 = "0.4"
 json-five = "0.3.1"
+# Tako remote control (#47): NaCl box (X25519 + XSalsa20Poly1305), tweetnacl-compatible,
+# to复刻 happy CLI 的 web-auth 握手 (POST /v1/auth/request → 轮询 → 解密 access.key)。
+crypto_box = { version = "0.9", features = ["std"] }
+rand = "0.8"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"

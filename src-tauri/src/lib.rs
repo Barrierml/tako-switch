@@ -1174,6 +1174,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::remote_status,
+            commands::remote_auth_begin,
+            commands::remote_auth_poll,
             commands::remote_start_daemon,
             commands::remote_stop_daemon,
             commands::remote_install,

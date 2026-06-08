@@ -6,6 +6,16 @@ export interface RemoteStatus {
   version: string | null;
 }
 
+/** #47 — auth handshake (复刻 happy web-auth). The frontend renders `web_url`
+ * as a QR code, opens it in a browser, then polls with the keypair. */
+export interface RemoteAuthBegin {
+  web_url: string;
+  public_key_b64: string;
+  secret_key_b64: string;
+}
+
+export type RemoteAuthPoll = { state: "pending" } | { state: "authorized" };
+
 export interface MigrationDetect {
   ccswitch_available: boolean;
   tako_cli_available: boolean;
@@ -16,8 +26,23 @@ export async function remoteStatus(): Promise<RemoteStatus> {
   return invoke("remote_status");
 }
 
-export async function remoteStartDaemon(takoKey: string): Promise<string> {
-  return invoke("remote_start_daemon", { takoKey });
+/** Step 1: register an ephemeral keypair, get the URL to scan/open. */
+export async function remoteAuthBegin(takoKey: string): Promise<RemoteAuthBegin> {
+  return invoke("remote_auth_begin", { takoKey });
+}
+
+/** Step 2: poll once for authorization. On `authorized`, credentials are
+ * written to access.key and the daemon can be started. */
+export async function remoteAuthPoll(
+  publicKeyB64: string,
+  secretKeyB64: string,
+): Promise<RemoteAuthPoll> {
+  return invoke("remote_auth_poll", { publicKeyB64, secretKeyB64 });
+}
+
+/** Start the local daemon once credentials exist (after a successful poll). */
+export async function remoteStartDaemon(): Promise<boolean> {
+  return invoke("remote_start_daemon");
 }
 
 export async function remoteStopDaemon(): Promise<boolean> {

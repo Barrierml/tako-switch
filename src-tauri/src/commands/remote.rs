@@ -2,16 +2,54 @@
 
 //! Tako remote control — drives the local `tako-remote` (Happy) CLI daemon so
 //! a user can hand off the current coding session to phone/browser via the
-//! self-hosted Tako backend. This is the cc-switch ↔ Happy fusion seam:
-//! Tako Switch spawns and manages the daemon, injecting the server URL + the
-//! user's Tako key. Additive — no upstream files changed.
+//! self-hosted Tako backend. This is the cc-switch ↔ Happy fusion seam.
+//!
+//! #47 — auth handshake is复刻 from happy CLI (`packages/happy-cli/src/ui/auth.ts`):
+//! generate an ephemeral NaCl `box` keypair → `POST {server}/v1/auth/request`
+//! (publicKey + supportsV2) → web URL `{webapp}/terminal/connect#key=<b64url(pk)>`
+//! → poll the same endpoint until `state == "authorized"` → decrypt the response
+//! bundle (ephPub[32]+nonce[24]+ct) with our secret → write `access.key` so the
+//! daemon picks up the credentials. Additive — no upstream files changed.
 
+use base64::Engine;
+use crypto_box::{
+    aead::{Aead},
+    PublicKey, SalsaBox, SecretKey,
+};
 use std::process::Stdio;
 use tokio::process::Command;
 
 const TAKO_SERVER_URL: &str = "https://happy.shiroha.tech";
+const TAKO_WEBAPP_URL: &str = "https://happy-remote.shiroha.tech";
 const REMOTE_BIN: &str = "tako-remote";
 const INSTALL_URL: &str = "https://tako.shiroha.tech/install.sh";
+const CLI_VERSION_HEADER: &str = "cli/tako-switch";
+
+/// NaCl box nonce length (XSalsa20Poly1305) = 24 bytes, matching tweetnacl.
+const NONCE_LEN: usize = 24;
+
+fn b64() -> base64::engine::GeneralPurpose {
+    base64::engine::general_purpose::STANDARD
+}
+
+/// base64url without padding, matching happy's `encodeBase64Url`.
+fn b64url_nopad(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Resolve the daemon home dir the same way the fork's `configuration.ts` does:
+/// honor `HAPPY_HOME_DIR` (expanding a leading `~`), else `~/.happy`.
+fn happy_home_dir() -> std::path::PathBuf {
+    if let Ok(custom) = std::env::var("HAPPY_HOME_DIR") {
+        let expanded = if let Some(rest) = custom.strip_prefix('~') {
+            crate::config::get_home_dir().join(rest.trim_start_matches('/'))
+        } else {
+            std::path::PathBuf::from(custom)
+        };
+        return expanded;
+    }
+    crate::config::get_home_dir().join(".happy")
+}
 
 #[derive(serde::Serialize)]
 pub struct RemoteStatus {
@@ -56,27 +94,174 @@ async fn is_daemon_running() -> bool {
     matches!(cmd.status().await, Ok(s) if s.success())
 }
 
-/// Start the local daemon, injecting server URL + Tako key. Returns the
-/// bind URL / QR payload the user scans from phone/web.
+/// Result of starting the auth handshake: the web URL to render as a QR code
+/// (and open in a browser), plus the ephemeral keypair the frontend holds and
+/// passes back into `remote_auth_poll`. The secret never touches disk until
+/// authentication succeeds.
+#[derive(serde::Serialize)]
+pub struct RemoteAuthBegin {
+    pub web_url: String,
+    pub public_key_b64: String,
+    pub secret_key_b64: String,
+}
+
+/// Step 1 — start the web-auth handshake (复刻 happy `doAuth`/`doWebAuth`).
+/// Generates an ephemeral NaCl box keypair, registers the public key with the
+/// server, and returns the URL the user scans/opens to authorize. `tako_key`
+/// (the active cr_ key) gates membership via `X-Tako-Key`.
 #[tauri::command]
-pub async fn remote_start_daemon(takoKey: String) -> Result<String, String> {
+pub async fn remote_auth_begin(takoKey: String) -> Result<RemoteAuthBegin, String> {
     if takoKey.trim().is_empty() {
         return Err("Tako key is required to start remote control".into());
     }
+    let secret = SecretKey::generate(&mut rand::thread_rng());
+    let public = secret.public_key();
+    let public_b64 = b64().encode(public.as_bytes());
+
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{TAKO_SERVER_URL}/v1/auth/request"))
+        .header("X-Happy-Client", CLI_VERSION_HEADER)
+        .header("X-Tako-Key", &takoKey)
+        .json(&serde_json::json!({ "publicKey": public_b64, "supportsV2": true }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to create auth request: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("Server rejected auth request: {e}"))?;
+
+    let web_url = format!(
+        "{TAKO_WEBAPP_URL}/terminal/connect#key={}",
+        b64url_nopad(public.as_bytes())
+    );
+    Ok(RemoteAuthBegin {
+        web_url,
+        public_key_b64: public_b64,
+        secret_key_b64: b64().encode(secret.to_bytes()),
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum RemoteAuthPoll {
+    /// Not yet authorized — frontend should poll again.
+    Pending,
+    /// Authorized; credentials written to `access.key`. Daemon can now start.
+    Authorized,
+}
+
+/// Step 2 — poll the server once for authorization (复刻 `waitForAuthentication`
+/// without the loop; the frontend drives the interval). On `authorized`,
+/// decrypts the response bundle and writes `access.key` in the exact format the
+/// daemon reads (legacy `secret` or `dataKey` variant).
+#[tauri::command]
+pub async fn remote_auth_poll(
+    publicKeyB64: String,
+    secretKeyB64: String,
+) -> Result<RemoteAuthPoll, String> {
+    let client = reqwest::Client::new();
+    let resp: serde_json::Value = client
+        .post(format!("{TAKO_SERVER_URL}/v1/auth/request"))
+        .header("X-Happy-Client", CLI_VERSION_HEADER)
+        .json(&serde_json::json!({ "publicKey": publicKeyB64, "supportsV2": true }))
+        .send()
+        .await
+        .map_err(|e| format!("Poll failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Bad poll response: {e}"))?;
+
+    if resp.get("state").and_then(|s| s.as_str()) != Some("authorized") {
+        return Ok(RemoteAuthPoll::Pending);
+    }
+
+    let token = resp
+        .get("token")
+        .and_then(|t| t.as_str())
+        .ok_or("Authorized response missing token")?
+        .to_string();
+    let response_b64 = resp
+        .get("response")
+        .and_then(|r| r.as_str())
+        .ok_or("Authorized response missing encrypted payload")?;
+
+    let secret_bytes = b64()
+        .decode(secretKeyB64.trim())
+        .map_err(|e| format!("Bad secret key: {e}"))?;
+    let secret = SecretKey::from_slice(&secret_bytes)
+        .map_err(|_| "Secret key must be 32 bytes".to_string())?;
+
+    let decrypted = decrypt_bundle(response_b64, &secret)?;
+    write_credentials(&decrypted, &token)?;
+    Ok(RemoteAuthPoll::Authorized)
+}
+
+/// Decrypt the `ephPub[32] + nonce[24] + ciphertext` bundle with our ephemeral
+/// secret, matching happy's `decryptWithEphemeralKey` (tweetnacl `box.open`).
+fn decrypt_bundle(response_b64: &str, secret: &SecretKey) -> Result<Vec<u8>, String> {
+    let bundle = b64()
+        .decode(response_b64)
+        .map_err(|e| format!("Bad encrypted payload: {e}"))?;
+    if bundle.len() < 32 + NONCE_LEN {
+        return Err("Encrypted payload too short".into());
+    }
+    let eph_pub = PublicKey::from_slice(&bundle[0..32])
+        .map_err(|_| "Bad ephemeral public key".to_string())?;
+    let nonce = crypto_box::Nonce::from_slice(&bundle[32..32 + NONCE_LEN]);
+    let ciphertext = &bundle[32 + NONCE_LEN..];
+
+    SalsaBox::new(&eph_pub, secret)
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| "Failed to decrypt response — please try again".to_string())
+}
+
+/// Write `access.key` in the format the daemon reads. `len == 32` → legacy
+/// secret; first byte `0` → dataKey (publicKey + locally-generated machineKey).
+fn write_credentials(decrypted: &[u8], token: &str) -> Result<(), String> {
+    let dir = happy_home_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+    let path = dir.join("access.key");
+
+    let json = if decrypted.len() == 32 {
+        serde_json::json!({ "secret": b64().encode(decrypted), "token": token })
+    } else if decrypted.first() == Some(&0) && decrypted.len() >= 33 {
+        let public_key = &decrypted[1..33];
+        let machine_key: [u8; 32] = rand::random();
+        serde_json::json!({
+            "encryption": {
+                "publicKey": b64().encode(public_key),
+                "machineKey": b64().encode(machine_key),
+            },
+            "token": token,
+        })
+    } else {
+        return Err("Unrecognized credential format from server".into());
+    };
+
+    std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap())
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(())
+}
+
+/// Start the local daemon once credentials exist (`access.key` written by the
+/// auth handshake). Injects the server URL so the daemon talks to our backend.
+#[tauri::command]
+pub async fn remote_start_daemon() -> Result<bool, String> {
     let mut cmd = Command::new(REMOTE_BIN);
     cmd.args(["daemon", "start"])
         .env("HAPPY_SERVER_URL", TAKO_SERVER_URL)
-        .env("HAPPY_TAKO_KEY", takoKey)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     no_window(&mut cmd);
 
     let out = cmd.output().await.map_err(|e| format!("Failed to start daemon: {e}"))?;
     if !out.status.success() {
-        return Err(format!("Daemon failed to start: {}", String::from_utf8_lossy(&out.stderr)));
+        return Err(format!(
+            "Daemon failed to start: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
     }
-    // The CLI prints the bind URL / auth payload on stdout.
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(true)
 }
 
 /// Stop the local daemon.
