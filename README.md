@@ -36,7 +36,7 @@ Modern AI coding workflows lean on a stack of tools — Claude Code, Codex, Gemi
 
 |                Main                 |               Add provider                |
 | :---------------------------------: | :---------------------------------------: |
-| ![Main](assets/screenshots/main.png) | ![Add](assets/screenshots/add.png)        |
+| ![Main](assets/screenshots/main-en.png) | ![Add](assets/screenshots/add-en.png)        |
 
 > Screenshots reflect Tako Switch 3.16.x. Live UI may differ slightly.
 

@@ -36,7 +36,7 @@ Moderne KI-gestützte Coding-Workflows setzen auf mehrere Tools — Claude Code,
 
 |                Hauptansicht                 |               Provider hinzufügen                |
 | :---------------------------------: | :---------------------------------------: |
-| ![Hauptansicht](assets/screenshots/main.png) | ![Hinzufügen](assets/screenshots/add.png)        |
+| ![Hauptansicht](assets/screenshots/main-en.png) | ![Hinzufügen](assets/screenshots/add-en.png)        |
 
 > Screenshots zeigen Tako Switch 3.16.x. Die aktuelle Oberfläche kann leicht abweichen.
 

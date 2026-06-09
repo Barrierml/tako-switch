@@ -36,7 +36,7 @@
 
 |                メイン                 |               provider 追加                |
 | :---------------------------------: | :---------------------------------------: |
-| ![Main](assets/screenshots/main.png) | ![Add](assets/screenshots/add.png)        |
+| ![Main](assets/screenshots/main-ja.png) | ![Add](assets/screenshots/add-ja.png)        |
 
 > スクリーンショットは Tako Switch 3.16.x 時点のもの。実際の UI は多少異なる場合がある。
 
