@@ -114,6 +114,7 @@ import { HERMES_DEFAULT_CONFIG } from "./hooks/useHermesFormState";
 import { resolveManagedAccountId } from "@/lib/authBinding";
 import { useOpenClawLiveProviderIds } from "@/hooks/useOpenClaw";
 import { useHermesLiveProviderIds } from "@/hooks/useHermes";
+import { useTakoAuth } from "@/hooks/useTakoAuth";
 
 type PresetEntry = {
   id: string;
@@ -261,6 +262,7 @@ function ProviderFormFull({
   const { t } = useTranslation();
   const isEditMode = Boolean(initialData);
   const queryClient = useQueryClient();
+  const { loggedIn: takoLoggedIn } = useTakoAuth();
   const { data: settingsData } = useSettingsQuery();
   const showCommonConfigNotice =
     settingsData != null && settingsData.commonConfigConfirmed !== true;
@@ -429,6 +431,7 @@ function ProviderFormFull({
     category,
     appType: appId,
     apiKeyField: appId === "claude" ? localApiKeyField : undefined,
+    forceCreateIfMissing: providerId === "tako-builtin",
   });
 
   const { baseUrl, handleClaudeBaseUrlChange } = useBaseUrlState({
@@ -1942,9 +1945,10 @@ function ProviderFormFull({
             <ClaudeFormFields
               providerId={providerId}
               shouldShowApiKey={
-                (category !== "cloud_provider" ||
+                providerId === "tako-builtin" ||
+                ((category !== "cloud_provider" ||
                   hasApiKeyField(form.getValues("settingsConfig"), "claude")) &&
-                shouldShowApiKey(form.getValues("settingsConfig"), isEditMode)
+                shouldShowApiKey(form.getValues("settingsConfig"), isEditMode))
               }
               apiKey={apiKey}
               onApiKeyChange={handleApiKeyChange}
@@ -2314,6 +2318,7 @@ function ProviderFormFull({
                 onPricingConfigChange={setPricingConfig}
                 isTako={providerId === "tako-builtin"}
                 takoApiKey={apiKey}
+                takoLoggedIn={takoLoggedIn}
               />
             )}
 

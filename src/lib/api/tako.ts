@@ -1,57 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export interface RemoteStatus {
-  installed: boolean;
-  running: boolean;
-  version: string | null;
-}
-
-/** #47 — auth handshake (复刻 happy web-auth). The frontend renders `web_url`
- * as a QR code, opens it in a browser, then polls with the keypair. */
-export interface RemoteAuthBegin {
-  web_url: string;
-  public_key_b64: string;
-  secret_key_b64: string;
-}
-
-export type RemoteAuthPoll = { state: "pending" } | { state: "authorized" };
-
 export interface MigrationDetect {
   ccswitch_available: boolean;
   tako_cli_available: boolean;
   tako_account_id: string | null;
-}
-
-export async function remoteStatus(): Promise<RemoteStatus> {
-  return invoke("remote_status");
-}
-
-/** Step 1: register an ephemeral keypair, get the URL to scan/open. The active
- * cr_ key is read backend-side from the Tako provider (user must be logged in). */
-export async function remoteAuthBegin(): Promise<RemoteAuthBegin> {
-  return invoke("remote_auth_begin");
-}
-
-/** Step 2: poll once for authorization. On `authorized`, credentials are
- * written to access.key and the daemon can be started. */
-export async function remoteAuthPoll(
-  publicKeyB64: string,
-  secretKeyB64: string,
-): Promise<RemoteAuthPoll> {
-  return invoke("remote_auth_poll", { publicKeyB64, secretKeyB64 });
-}
-
-/** Start the local daemon once credentials exist (after a successful poll). */
-export async function remoteStartDaemon(): Promise<boolean> {
-  return invoke("remote_start_daemon");
-}
-
-export async function remoteStopDaemon(): Promise<boolean> {
-  return invoke("remote_stop_daemon");
-}
-
-export async function remoteInstall(): Promise<boolean> {
-  return invoke("remote_install");
 }
 
 export async function migrationDetect(): Promise<MigrationDetect> {

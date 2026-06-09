@@ -1,22 +1,4 @@
 {
-  "remote": {
-    "title": "リモート操作",
-    "subtitle": "スマホやブラウザからこの端末の Claude Code セッションを操作",
-    "loginFirst": "リモート操作には Tako へのログインが必要です",
-    "installHint": "初回利用には tako-remote CLI のインストールが必要です",
-    "install": "tako-remote をインストール",
-    "installing": "インストール中…",
-    "notRunningHint": "QRコードで連携すると、リモートでセッションを操作できます",
-    "bind": "QRコードで連携",
-    "scanHint": "スマホでQRコードをスキャン、またはブラウザで認証してください",
-    "waiting": "認証を待っています…",
-    "openBrowser": "ブラウザで開く",
-    "copyUrl": "リンクをコピー",
-    "cancel": "キャンセル",
-    "runningHint": "リモートデーモン稼働中 — スマホ/Webから操作できます",
-    "stop": "リモートを停止",
-    "refresh": "状態を更新"
-  },
   "app": {
     "title": "Tako Switch",
     "description": "Claude Code・Codex・Gemini CLI のためのオールインワンアシスタント"

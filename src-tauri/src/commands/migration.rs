@@ -148,6 +148,8 @@ pub(crate) fn write_key_into_tako_providers(state: &AppState, api_key: &str) -> 
                 "claude" => {
                     cfg["env"]["ANTHROPIC_AUTH_TOKEN"] =
                         serde_json::Value::String(api_key.to_string());
+                    cfg["env"]["ANTHROPIC_BASE_URL"] =
+                        serde_json::Value::String("https://tako.shiroha.tech".to_string());
                 }
                 "codex" => {
                     cfg["auth"]["OPENAI_API_KEY"] =

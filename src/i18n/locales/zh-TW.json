@@ -1,22 +1,4 @@
 {
-  "remote": {
-    "title": "遠端操控",
-    "subtitle": "用手機或瀏覽器接管本機的 Claude Code 工作階段",
-    "loginFirst": "請先登入 Tako 帳號再使用遠端操控",
-    "installHint": "首次使用需安裝 tako-remote 命令列工具",
-    "install": "安裝 tako-remote",
-    "installing": "正在安裝…",
-    "notRunningHint": "掃碼綁定後即可遠端接管本機工作階段",
-    "bind": "掃碼綁定",
-    "scanHint": "用手機掃描 QR Code，或在瀏覽器中完成授權",
-    "waiting": "等待授權…",
-    "openBrowser": "瀏覽器開啟",
-    "copyUrl": "複製連結",
-    "cancel": "取消",
-    "runningHint": "遠端守護程序執行中，可在手機/網頁接管工作階段",
-    "stop": "停止遠端",
-    "refresh": "重新整理狀態"
-  },
   "app": {
     "title": "Tako Switch",
     "description": "Claude Code / Codex / Gemini CLI 全方位輔助工具"

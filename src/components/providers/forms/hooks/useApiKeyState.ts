@@ -13,6 +13,7 @@ interface UseApiKeyStateProps {
   category?: ProviderCategory;
   appType?: string;
   apiKeyField?: string;
+  forceCreateIfMissing?: boolean;
 }
 
 /**
@@ -26,6 +27,7 @@ export function useApiKeyState({
   category,
   appType,
   apiKeyField,
+  forceCreateIfMissing,
 }: UseApiKeyStateProps) {
   const [apiKey, setApiKey] = useState(() => {
     if (initialConfig) {
@@ -66,9 +68,10 @@ export function useApiKeyState({
           // - 官方类别：不创建字段（UI 也会禁用输入框）
           // - 未传入 category：不创建字段（避免意外行为）
           createIfMissing:
-            selectedPresetId !== null &&
+            forceCreateIfMissing ||
+            (selectedPresetId !== null &&
             category !== undefined &&
-            category !== "official",
+            category !== "official"),
           appType,
           apiKeyField,
         },

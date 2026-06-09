@@ -150,6 +150,18 @@ export const claudeDesktopProviderPresets: ClaudeDesktopProviderPreset[] = [
     iconColor: "#D4915D",
   },
   {
+    name: "Tako",
+    websiteUrl: "https://tako.shiroha.tech",
+    apiKeyUrl: "https://tako.shiroha.tech",
+    category: "official",
+    baseUrl: "https://tako.shiroha.tech",
+    mode: "proxy",
+    apiFormat: "anthropic",
+    modelRoutes: passthroughRoutes(true),
+    icon: "tako",
+    iconColor: "#F06858",
+  },
+  {
     name: "Shengsuanyun",
     nameKey: "providerForm.presets.shengsuanyun",
     websiteUrl: "https://www.shengsuanyun.com/?from=CH_4HHXMRYF",

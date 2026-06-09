@@ -27,13 +27,12 @@ import {
   Cpu,
   LayoutDashboard,
   Terminal,
-  MonitorSmartphone,
 } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Provider, VisibleApps } from "@/types";
 import takoTitlebarIcon from "@/assets/icons/app-icon.png";
 import type { EnvConflict } from "@/types/env";
-import { useProvidersQuery, useSettingsQuery } from "@/lib/query";
+import { useProvidersQuery, useSettingsQuery, useSessionsQuery } from "@/lib/query";
 import {
   providersApi,
   settingsApi,
@@ -67,6 +66,8 @@ import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LaunchGuideDialog } from "@/components/LaunchGuideDialog";
 import { TakoAuthButton } from "@/components/TakoAuthButton";
+import { TakoLaunchPanel } from "@/components/providers/TakoLaunchPanel";
+import { getIcon } from "@/icons/extracted";
 import { LoginPromptDialog } from "@/components/LoginPromptDialog";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { UpdateBadge } from "@/components/UpdateBadge";
@@ -82,7 +83,6 @@ import UnifiedSkillsPanel from "@/components/skills/UnifiedSkillsPanel";
 import { DeepLinkImportDialog } from "@/components/DeepLinkImportDialog";
 import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
 import { MigrationPromptDialog } from "@/components/MigrationPromptDialog";
-import { RemotePanel } from "@/components/remote/RemotePanel";
 import { AgentsPanel } from "@/components/agents/AgentsPanel";
 import { UniversalProviderPanel } from "@/components/universal";
 import { McpIcon } from "@/components/BrandIcons";
@@ -113,8 +113,7 @@ type View =
   | "openclawEnv"
   | "openclawTools"
   | "openclawAgents"
-  | "hermesMemory"
-  | "remote";
+  | "hermesMemory";
 
 interface SyncStatusUpdatedPayload {
   source?: string;
@@ -160,7 +159,6 @@ const VALID_VIEWS: View[] = [
   "openclawTools",
   "openclawAgents",
   "hermesMemory",
-  "remote",
 ];
 
 const getInitialView = (): View => {
@@ -294,6 +292,21 @@ function App() {
     sharedFeatureApp === "openclaw" ||
     sharedFeatureApp === "gemini" ||
     sharedFeatureApp === "hermes";
+
+  const { data: allSessions } = useSessionsQuery();
+  const frequentDirs = useMemo(() => {
+    if (!allSessions) return [];
+    const counts = new Map<string, number>();
+    for (const s of allSessions) {
+      if (s.projectDir) {
+        counts.set(s.projectDir, (counts.get(s.projectDir) || 0) + 1);
+      }
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([dir]) => dir);
+  }, [allSessions]);
 
   const {
     addProvider,
@@ -611,13 +624,28 @@ function App() {
     broken: boolean;
   } | null>(null);
   // 首次启动引导：高亮底部启动按钮，点击或关闭后不再提示。
-  const [launchHintDismissed, setLaunchHintDismissed] = useState(
-    () => localStorage.getItem("tako_launch_hint_dismissed") === "1",
+  const [takoExpanded, setTakoExpanded] = useState(true);
+  const [takoSelectedModel, setTakoSelectedModel] = useState(
+    () => localStorage.getItem("tako_selected_model") || "",
   );
-  const dismissLaunchHint = () => {
-    localStorage.setItem("tako_launch_hint_dismissed", "1");
-    setLaunchHintDismissed(true);
+  const handleTakoModelChange = async (model: string) => {
+    setTakoSelectedModel(model);
+    localStorage.setItem("tako_selected_model", model);
+    if (currentProviderId === "tako-builtin" && providers[currentProviderId]) {
+      const p = providers[currentProviderId];
+      const config = typeof p.settingsConfig === "string"
+        ? JSON.parse(p.settingsConfig || "{}")
+        : { ...(p.settingsConfig || {}) };
+      config.env = config.env || {};
+      if (model) {
+        config.env.ANTHROPIC_MODEL = model;
+      } else {
+        delete config.env.ANTHROPIC_MODEL;
+      }
+      await updateProvider({ ...p, settingsConfig: config });
+    }
   };
+
   const openHermesWebUI = useOpenHermesWebUI(() =>
     setLaunchDashboardOpen(true),
   );
@@ -839,6 +867,19 @@ function App() {
     }
   };
 
+  const handleQuickLaunch = async (provider: Provider, cwd: string) => {
+    try {
+      await providersApi.openTerminal(provider.id, activeApp, { cwd });
+      toast.success(t("provider.terminalOpened", { defaultValue: "终端已打开" }));
+    } catch (error) {
+      const errorMessage = extractErrorMessage(error);
+      toast.error(
+        t("provider.terminalOpenFailed", { defaultValue: "打开终端失败" }) +
+          (errorMessage ? `: ${errorMessage}` : ""),
+      );
+    }
+  };
+
   const handleImportSuccess = async () => {
     try {
       await queryClient.invalidateQueries({
@@ -921,8 +962,6 @@ function App() {
           );
         case "hermesMemory":
           return <HermesMemoryPanel />;
-        case "remote":
-          return <RemotePanel />;
         case "skills":
           return (
             <UnifiedSkillsPanel
@@ -978,7 +1017,14 @@ function App() {
         default:
           return (
             <div className="px-6 flex flex-col flex-1 min-h-0 overflow-hidden">
-              <div className="flex-1 overflow-y-auto overflow-x-hidden pb-12 px-1">
+              <div
+                className="flex-1 overflow-y-auto overflow-x-hidden pb-12 px-1"
+                onScroll={(e) => {
+                  if (currentProviderId === "tako-builtin" && (e.currentTarget as HTMLDivElement).scrollTop > 30) {
+                    setTakoExpanded(false);
+                  }
+                }}
+              >
                 <AnimatePresence mode="wait">
                   <motion.div
                     key={activeApp}
@@ -1035,36 +1081,54 @@ function App() {
                       }
                     />
                     {currentProviderId && providers[currentProviderId] && (
-                      <div className="sticky bottom-0 -mx-1 mt-2 border-t border-border bg-background/95 px-1 py-3 backdrop-blur">
-                        <Button
-                          size="lg"
-                          className={cn(
-                            "w-full gap-2",
-                            !launchHintDismissed &&
-                              "ring-2 ring-[var(--app-link)] ring-offset-2 ring-offset-background animate-pulse",
+                      currentProviderId === "tako-builtin" ? (
+                        <TakoLaunchPanel
+                          provider={providers[currentProviderId]}
+                          expanded={takoExpanded}
+                          frequentDirs={frequentDirs}
+                          selectedModel={takoSelectedModel}
+                          onModelChange={handleTakoModelChange}
+                          onLaunch={(cwd) => handleQuickLaunch(providers[currentProviderId], cwd)}
+                          onBrowseLaunch={() => handleOpenTerminal(providers[currentProviderId])}
+                          onViewSessions={() => setCurrentView("sessions")}
+                          onExpand={() => setTakoExpanded(true)}
+                        />
+                      ) : (
+                        <div className="sticky bottom-0 -mx-1 mt-2 border-t border-border bg-background/95 px-1 py-3 backdrop-blur space-y-2">
+                          {frequentDirs.length > 0 && (
+                            <div className="space-y-1.5">
+                              <p className="text-xs font-medium text-muted-foreground px-1">
+                                {t("provider.frequentDirs", { defaultValue: "常用目录" })}
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {frequentDirs.map((dir) => (
+                                  <button
+                                    key={dir}
+                                    type="button"
+                                    onClick={() => handleQuickLaunch(providers[currentProviderId], dir)}
+                                    className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-xs text-foreground/80 transition-colors hover:bg-[var(--app-link)]/10 hover:border-[var(--app-link)]/30 hover:text-foreground truncate max-w-[200px]"
+                                    title={dir}
+                                  >
+                                    <Terminal className="h-3 w-3 shrink-0 opacity-50" />
+                                    <span className="truncate">{dir.replace(/^\/Users\/[^/]+\//, "~/")}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
                           )}
-                          onClick={() => {
-                            dismissLaunchHint();
-                            handleOpenTerminal(providers[currentProviderId]);
-                          }}
-                        >
-                          <Terminal className="h-5 w-5" />
-                          {t("provider.launch", "启动")}
-                          {" · "}
-                          {providers[currentProviderId].name}
-                        </Button>
-                        <p className="mt-1.5 text-center text-xs text-muted-foreground">
-                          {!launchHintDismissed
-                            ? t("provider.launchHintFirst", {
-                                defaultValue:
-                                  "点这里启动：将在终端打开并自动注入当前服务商配置",
-                              })
-                            : t("provider.launchHint", {
-                                defaultValue:
-                                  "将在终端启动并自动注入当前服务商配置",
-                              })}
-                        </p>
-                      </div>
+                          <Button
+                            variant={frequentDirs.length > 0 ? "outline" : "default"}
+                            size="default"
+                            className="w-full gap-2"
+                            onClick={() => handleOpenTerminal(providers[currentProviderId])}
+                          >
+                            <FolderOpen className="h-4 w-4" />
+                            {t("provider.launchBrowse", { defaultValue: "选择文件夹启动" })}
+                            {" · "}
+                            {providers[currentProviderId].name}
+                          </Button>
+                        </div>
+                      )
                     )}
                   </motion.div>
                 </AnimatePresence>
@@ -1233,26 +1297,14 @@ function App() {
                   {currentView === "openclawAgents" &&
                     t("openclaw.agents.title")}
                   {currentView === "hermesMemory" && t("hermes.memory.title")}
-                  {currentView === "remote" && t("remote.title")}
                 </h1>
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <div className="relative inline-flex items-center">
-                  <a
-                    href="https://tako.shiroha.tech"
-                    target="_blank"
-                    rel="noreferrer"
-                    className={cn(
-                      "text-xl font-semibold transition-colors",
-                      isProxyRunning && isCurrentAppTakeoverActive
-                        ? "text-emerald-500 hover:text-emerald-600 dark:text-emerald-400 dark:hover:text-emerald-300"
-                        : "text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300",
-                    )}
-                  >
-                    Tako Switch
-                  </a>
-                </div>
+                <span
+                  className="flex h-5 w-5 items-center justify-center opacity-60"
+                  dangerouslySetInnerHTML={{ __html: getIcon("tako") }}
+                />
                 <Button
                   variant="ghost"
                   size="icon"
@@ -1292,6 +1344,20 @@ function App() {
           </div>
 
           <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
+            <a
+              href="https://tako.shiroha.tech"
+              target="_blank"
+              rel="noreferrer"
+              style={{ WebkitAppRegion: "no-drag" } as any}
+              className={cn(
+                "text-sm font-semibold transition-colors",
+                isProxyRunning && isCurrentAppTakeoverActive
+                  ? "text-emerald-500 hover:text-emerald-600 dark:text-emerald-400 dark:hover:text-emerald-300"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              Tako Switch
+            </a>
             <TakoAuthButton />
             {currentView === "providers" &&
               activeApp !== "opencode" &&
@@ -1575,15 +1641,6 @@ function App() {
                                 title={t("sessionManager.title")}
                               >
                                 <History className="flex-shrink-0 w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("remote")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("remote.title")}
-                              >
-                                <MonitorSmartphone className="w-4 h-4" />
                               </Button>
                               <Button
                                 variant="ghost"

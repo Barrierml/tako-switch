@@ -50,6 +50,8 @@ interface ProviderAdvancedConfigProps {
   isTako?: boolean;
   /** Current cr_ key (Tako provider only) — used to list supported models. */
   takoApiKey?: string;
+  /** Whether the user is logged in via Tako auth (key may be managed by backend). */
+  takoLoggedIn?: boolean;
 }
 
 export function ProviderAdvancedConfig({
@@ -59,6 +61,7 @@ export function ProviderAdvancedConfig({
   onPricingConfigChange,
   isTako = false,
   takoApiKey = "",
+  takoLoggedIn = false,
 }: ProviderAdvancedConfigProps) {
   const { t } = useTranslation();
   const [isTestConfigOpen, setIsTestConfigOpen] = useState(testConfig.enabled);
@@ -265,7 +268,7 @@ export function ProviderAdvancedConfig({
               <TakoModelsList
                 loading={modelsLoading}
                 models={models}
-                hasKey={!!takoApiKey.trim()}
+                hasKey={!!takoApiKey.trim() || takoLoggedIn}
               />
             </div>
           )}

@@ -1173,12 +1173,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::remote_status,
-            commands::remote_auth_begin,
-            commands::remote_auth_poll,
-            commands::remote_start_daemon,
-            commands::remote_stop_daemon,
-            commands::remote_install,
             commands::tako_statusline_status,
             commands::tako_statusline_enable,
             commands::tako_statusline_disable,

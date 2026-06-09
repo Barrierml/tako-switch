@@ -1,22 +1,4 @@
 {
-  "remote": {
-    "title": "Remote Control",
-    "subtitle": "Take over this machine's Claude Code session from your phone or browser",
-    "loginFirst": "Please log in to Tako first to use remote control",
-    "installHint": "First-time setup requires the tako-remote CLI",
-    "install": "Install tako-remote",
-    "installing": "Installing…",
-    "notRunningHint": "Scan to bind, then take over this session remotely",
-    "bind": "Scan to bind",
-    "scanHint": "Scan the QR code with your phone, or authorize in the browser",
-    "waiting": "Waiting for authorization…",
-    "openBrowser": "Open browser",
-    "copyUrl": "Copy link",
-    "cancel": "Cancel",
-    "runningHint": "Remote daemon is running — take over from phone/web",
-    "stop": "Stop remote",
-    "refresh": "Refresh status"
-  },
   "app": {
     "title": "Tako Switch",
     "description": "All-in-One Assistant for Claude Code, Codex & Gemini CLI"
