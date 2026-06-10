@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { LogOut, Loader2, UserRound, ChevronDown, KeyRound } from "lucide-react";
+import { LogIn, LogOut, Loader2, UserRound, ChevronDown, KeyRound } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -108,10 +108,11 @@ export function TakoAuthButton() {
             type="button"
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
             title={t("takoAuth.login", { defaultValue: "登录 Tako" })}
-            className="group flex items-center gap-1.5 rounded-full border border-border/60 bg-background/60 px-3 py-1.5 transition-all hover:border-[var(--app-link)]/40 hover:bg-[var(--app-link)]/10 active:scale-95"
+            className="group flex items-center gap-1.5 rounded-full bg-gradient-to-r from-[#F06858] to-[#E8484A] px-4 py-1.5 shadow-sm transition-all hover:brightness-110 active:scale-95"
           >
-            <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">
-              {t("takoAuth.notLoggedIn", { defaultValue: "未登录" })}
+            <LogIn className="h-3.5 w-3.5 text-white/90" />
+            <span className="text-xs font-medium text-white">
+              {t("takoAuth.loginBtn", { defaultValue: "登录" })}
             </span>
           </button>
         </PopoverTrigger>
@@ -177,7 +178,7 @@ export function TakoAuthButton() {
           >
             <span
               className={cn(
-                "flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br text-xs font-bold text-white shadow-sm",
+                "flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br text-xs font-semibold text-white shadow-sm ring-2 ring-white/20",
                 avatarGradient(name),
               )}
             >
@@ -193,7 +194,7 @@ export function TakoAuthButton() {
           <DropdownMenuLabel className="flex items-center gap-2.5 py-2">
             <span
               className={cn(
-                "flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br text-sm font-bold text-white",
+                "flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br text-sm font-semibold text-white ring-2 ring-white/20",
                 avatarGradient(name),
               )}
             >
