@@ -1,6 +1,6 @@
 {
   "name": "tako-switch",
-  "version": "4.0.3",
+  "version": "4.0.4",
   "description": "Tako Switch — All-in-One launcher for Claude Code, Codex & Gemini CLI, with remote control. Forked from cc-switch.",
   "type": "module",
   "scripts": {

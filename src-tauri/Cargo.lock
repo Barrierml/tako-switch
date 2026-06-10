@@ -5330,7 +5330,7 @@ dependencies = [
 
 [[package]]
 name = "tako-switch"
-version = "4.0.3"
+version = "4.0.4"
 dependencies = [
  "anyhow",
  "arboard",

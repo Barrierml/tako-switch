@@ -96,23 +96,9 @@ jobs:
 
       - name: Prepare Tauri signing key
         shell: bash
-        env:
-          TAURI_KEY_RAW: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_KEY_PW: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if [ -z “$TAURI_KEY_RAW” ]; then
-            echo “❌ TAURI_SIGNING_PRIVATE_KEY Secret is empty” >&2
-            exit 1
-          fi
-          # Write key to GITHUB_ENV using heredoc (preserves newlines)
-          {
-            echo “TAURI_SIGNING_PRIVATE_KEY<<__EOF__”
-            printf '%s\n' “$TAURI_KEY_RAW”
-            echo “__EOF__”
-          } >> “$GITHUB_ENV”
-          if [ -n “$TAURI_KEY_PW” ]; then
-            echo “TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$TAURI_KEY_PW” >> “$GITHUB_ENV”
-          fi
+          echo “TAURI_SIGNING_PRIVATE_KEY=${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}” >> “$GITHUB_ENV”
+          echo “TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}” >> “$GITHUB_ENV”
           echo “✅ Tauri signing key prepared”
 
       - name: Import Apple signing certificate
