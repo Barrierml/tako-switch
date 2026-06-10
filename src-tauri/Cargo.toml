@@ -1,6 +1,6 @@
 [package]
 name = "tako-switch"
-version = "4.0.1"
+version = "4.0.2"
 description = "Tako Switch — All-in-One launcher for Claude Code, Codex & Gemini CLI, with remote control. Forked from cc-switch."
 authors = ["Tako", "Jason Young (cc-switch original)"]
 license = "MIT"
