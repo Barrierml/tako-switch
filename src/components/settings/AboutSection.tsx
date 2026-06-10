@@ -334,14 +334,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
     let active = true;
     const load = async () => {
       try {
-        const [appVersion] = await Promise.all([
-          getVersion(),
-          loadAllToolVersions(),
-        ]);
-
-        if (active) {
-          setVersion(appVersion);
-        }
+        const appVersion = await getVersion();
+        if (active) setVersion(appVersion);
+        await loadAllToolVersions();
       } catch (error) {
         console.error("[AboutSection] Failed to load info", error);
         if (active) {
