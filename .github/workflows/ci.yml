@@ -1,99 +1,81 @@
 name: CI
 
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  pull_request:
 
 jobs:
-  frontend:
-    name: Frontend Checks
+  frontend-and-scripts:
+    name: Frontend & Manifest Script
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
+          cache: npm
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+      - uses: actions/setup-python@v5
         with:
-          version: 10.12.3
-          run_install: false
+          python-version: "3.12"
 
-      - name: Get pnpm store directory
-        id: pnpm-store
-        shell: bash
-        run: echo "path=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+      - name: Install frontend dependencies
+        run: npm ci
 
-      - name: Cache pnpm store
-        uses: actions/cache@v5
-        with:
-          path: ${{ steps.pnpm-store.outputs.path }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: ${{ runner.os }}-pnpm-store-
+      - name: Typecheck and build frontend
+        run: npm run build
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Validate manifest sync unit tests
+        run: python3 -m unittest -v scripts/test_sync_manifest.py
 
-      - name: TypeScript type check
-        run: pnpm typecheck
+      - name: Validate manifest.json structure
+        run: |
+          python3 -c '
+          import json
+          data = json.load(open("manifest/manifest.json", encoding="utf-8"))
+          assert data["schemaVersion"] == 1
+          assert set(data["apps"].keys()) == {"codex", "claude", "antigravity"}
+          print("manifest.json OK:", list(data["apps"].keys()))
+          '
 
-      - name: Check formatting
-        run: pnpm format:check
-
-      - name: Unit tests
-        run: pnpm test:unit
-
-  backend:
-    name: Backend Checks
-    runs-on: ubuntu-22.04
+  rust-check:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
         with:
-          components: rustfmt, clippy
+          node-version: "22"
+          cache: npm
 
-      - name: Install Linux system deps
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux Tauri system dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config libssl-dev \
-            libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev \
-            || sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.0-dev
-          sudo apt-get install -y --no-install-recommends libsoup-3.0-dev \
-            || sudo apt-get install -y --no-install-recommends libsoup2.4-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev
 
-      - name: Cache Cargo registry and build
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+      - name: Build frontend dist for Tauri embed check
+        run: |
+          npm ci
+          npm run build
 
-      - name: Create frontend dist placeholder
-        run: mkdir -p dist
-
-      - name: Check Rust formatting
-        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
-
-      - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
-
-      - name: Run tests
+      - name: Run cargo test
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Run cargo clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

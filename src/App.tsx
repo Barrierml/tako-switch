@@ -1,1778 +1,859 @@
-import { useEffect, useMemo, useState, useRef } from "react";
-import { useTranslation } from "react-i18next";
-import { motion, AnimatePresence } from "framer-motion";
-import { toast } from "sonner";
-import { invoke } from "@tauri-apps/api/core";
-import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import {
-  Plus,
-  Settings,
-  ArrowLeft,
-  Minus,
-  Maximize2,
-  Minimize2,
-  X,
-  Book,
-  Brain,
-  Wrench,
-  RefreshCw,
-  History,
-  BarChart2,
+  Activity,
   Download,
-  FolderArchive,
-  Search,
-  FolderOpen,
+  ExternalLink,
   KeyRound,
-  Shield,
-  Cpu,
-  LayoutDashboard,
-  Terminal,
+  LogIn,
+  LogOut,
+  RefreshCw,
+  RotateCw,
+  Settings,
+  Sparkles,
+  X,
 } from "lucide-react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { Provider, VisibleApps } from "@/types";
-import takoTitlebarIcon from "@/assets/icons/app-icon.png";
-import type { EnvConflict } from "@/types/env";
-import { useProvidersQuery, useSettingsQuery, useSessionsQuery } from "@/lib/query";
 import {
-  providersApi,
-  settingsApi,
+  api,
   type AppId,
-  type ProviderSwitchEvent,
-} from "@/lib/api";
-import { checkAllEnvConflicts, checkEnvConflicts } from "@/lib/api/env";
-import { useProviderActions } from "@/hooks/useProviderActions";
-import { openclawKeys, useOpenClawHealth } from "@/hooks/useOpenClaw";
-import { hermesKeys, useOpenHermesWebUI } from "@/hooks/useHermes";
-import { hermesApi } from "@/lib/api/hermes";
-import { useProxyStatus } from "@/hooks/useProxyStatus";
-import { useAutoCompact } from "@/hooks/useAutoCompact";
-import { useUsageCacheBridge } from "@/hooks/useUsageCacheBridge";
-import { useTauriEvent } from "@/hooks/useTauriEvent";
-import { useLastValidValue } from "@/hooks/useLastValidValue";
-import { extractErrorMessage } from "@/utils/errorUtils";
-import { isTextEditableTarget } from "@/utils/domUtils";
-import { deepClone } from "@/utils/deepClone";
-import { cn } from "@/lib/utils";
-import {
-  isWindows,
-  isLinux,
-  DRAG_REGION_ATTR,
-  DRAG_REGION_STYLE,
-} from "@/lib/platform";
-import { AppSwitcher } from "@/components/AppSwitcher";
-import { ProviderList } from "@/components/providers/ProviderList";
-import { AddProviderDialog } from "@/components/providers/AddProviderDialog";
-import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { LaunchGuideDialog } from "@/components/LaunchGuideDialog";
-import { TakoAuthButton } from "@/components/TakoAuthButton";
-import { TakoLaunchPanel } from "@/components/providers/TakoLaunchPanel";
-import { getIcon } from "@/icons/extracted";
-import { LoginPromptDialog } from "@/components/LoginPromptDialog";
-import { SettingsPage } from "@/components/settings/SettingsPage";
-import { UpdateBadge } from "@/components/UpdateBadge";
-import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
-import { ProxyToggle } from "@/components/proxy/ProxyToggle";
-import { ClaudeDesktopRouteToggle } from "@/components/proxy/ClaudeDesktopRouteToggle";
-import { FailoverToggle } from "@/components/proxy/FailoverToggle";
-import UsageScriptModal from "@/components/UsageScriptModal";
-import UnifiedMcpPanel from "@/components/mcp/UnifiedMcpPanel";
-import PromptPanel from "@/components/prompts/PromptPanel";
-import { SkillsPage } from "@/components/skills/SkillsPage";
-import UnifiedSkillsPanel from "@/components/skills/UnifiedSkillsPanel";
-import { DeepLinkImportDialog } from "@/components/DeepLinkImportDialog";
-import { FirstRunNoticeDialog } from "@/components/FirstRunNoticeDialog";
-import { MigrationPromptDialog } from "@/components/MigrationPromptDialog";
-import { AgentsPanel } from "@/components/agents/AgentsPanel";
-import { UniversalProviderPanel } from "@/components/universal";
-import { McpIcon } from "@/components/BrandIcons";
-import { Button } from "@/components/ui/button";
-import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
-import {
-  useDisableCurrentOmo,
-  useDisableCurrentOmoSlim,
-} from "@/lib/query/omo";
-import WorkspaceFilesPanel from "@/components/workspace/WorkspaceFilesPanel";
-import EnvPanel from "@/components/openclaw/EnvPanel";
-import ToolsPanel from "@/components/openclaw/ToolsPanel";
-import AgentsDefaultsPanel from "@/components/openclaw/AgentsDefaultsPanel";
-import OpenClawHealthBanner from "@/components/openclaw/OpenClawHealthBanner";
-import HermesMemoryPanel from "@/components/hermes/HermesMemoryPanel";
+  type AppMode,
+  type AppSnapshot,
+  type AppUpdateStatus,
+  type DashboardPayload,
+  type DiagnosticResult,
+  type InstallProgressEvent,
+  type McpToolsConfig,
+} from "./lib/api";
 
-type View =
-  | "providers"
-  | "settings"
-  | "prompts"
-  | "skills"
-  | "skillsDiscovery"
-  | "mcp"
-  | "agents"
-  | "universal"
-  | "sessions"
-  | "workspace"
-  | "openclawEnv"
-  | "openclawTools"
-  | "openclawAgents"
-  | "hermesMemory";
-
-interface SyncStatusUpdatedPayload {
-  source?: string;
-  status?: string;
-  error?: string;
-}
-
-const DEFAULT_DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
-const HEADER_HEIGHT = 64; // px
-
-const STORAGE_KEY = "tako-switch-last-app";
-const VALID_APPS: AppId[] = [
-  "claude",
-  "claude-desktop",
-  "codex",
-  "gemini",
-  "opencode",
-  "openclaw",
-  "hermes",
+const MODES: { id: AppMode; label: string; tip: string }[] = [
+  { id: "official", label: "官方", tip: "纯官方账号与直连端点，无损恢复原始配置" },
+  { id: "hybrid", label: "聚合", tip: "保留官方订阅主模型，注入 Tako 超级 MCP 工具" },
+  { id: "tako", label: "Tako", tip: "主模型与 MCP 全量走 Tako 企业网关" },
 ];
 
-const getInitialApp = (): AppId => {
-  const saved = localStorage.getItem(STORAGE_KEY) as AppId | null;
-  if (saved && VALID_APPS.includes(saved)) {
-    return saved;
-  }
-  return "claude";
-};
-
-const VIEW_STORAGE_KEY = "tako-switch-last-view";
-const VALID_VIEWS: View[] = [
-  "providers",
-  "settings",
-  "prompts",
-  "skills",
-  "skillsDiscovery",
-  "mcp",
-  "agents",
-  "universal",
-  "sessions",
-  "workspace",
-  "openclawEnv",
-  "openclawTools",
-  "openclawAgents",
-  "hermesMemory",
+const MCP_TOOLS: { key: keyof Pick<McpToolsConfig, "image" | "video" | "audio" | "search" | "consult">; label: string }[] = [
+  { key: "image", label: "生图" },
+  { key: "video", label: "生视频" },
+  { key: "audio", label: "音频" },
+  { key: "search", label: "联网搜索" },
+  { key: "consult", label: "外脑顾问" },
 ];
 
-const getInitialView = (): View => {
-  const saved = localStorage.getItem(VIEW_STORAGE_KEY) as View | null;
-  if (saved && VALID_VIEWS.includes(saved)) {
-    return saved;
-  }
-  return "providers";
-};
-
-function App() {
-  const { t } = useTranslation();
-  const queryClient = useQueryClient();
-
-  const [activeApp, setActiveApp] = useState<AppId>(getInitialApp);
-  const sharedFeatureApp: AppId =
-    activeApp === "claude-desktop" ? "claude" : activeApp;
-  const [currentView, setCurrentView] = useState<View>(getInitialView);
-  const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
-  const [isAddOpen, setIsAddOpen] = useState(false);
-  const [isWindowMaximized, setIsWindowMaximized] = useState(false);
-
-  useEffect(() => {
-    localStorage.setItem(VIEW_STORAGE_KEY, currentView);
-  }, [currentView]);
-
-  const { data: settingsData } = useSettingsQuery();
-  const useAppWindowControls =
-    isLinux() && (settingsData?.useAppWindowControls ?? false);
-  const dragBarHeight = useAppWindowControls ? 32 : DEFAULT_DRAG_BAR_HEIGHT;
-  const contentTopOffset = dragBarHeight + HEADER_HEIGHT;
-  const visibleApps: VisibleApps = settingsData?.visibleApps ?? {
-    claude: true,
-    "claude-desktop": true,
-    codex: true,
-    gemini: true,
-    opencode: true,
-    openclaw: true,
-    hermes: true,
-  };
-
-  const getFirstVisibleApp = (): AppId => {
-    if (visibleApps.claude) return "claude";
-    if (visibleApps["claude-desktop"]) return "claude-desktop";
-    if (visibleApps.codex) return "codex";
-    if (visibleApps.gemini) return "gemini";
-    if (visibleApps.opencode) return "opencode";
-    if (visibleApps.openclaw) return "openclaw";
-    if (visibleApps.hermes) return "hermes";
-    return "claude"; // fallback
-  };
-
-  useEffect(() => {
-    if (!visibleApps[activeApp]) {
-      setActiveApp(getFirstVisibleApp());
-    }
-  }, [visibleApps, activeApp]);
-
-  // Fallback from sessions view when switching to an app without session support
-  useEffect(() => {
-    if (
-      currentView === "sessions" &&
-      sharedFeatureApp !== "claude" &&
-      sharedFeatureApp !== "codex" &&
-      sharedFeatureApp !== "opencode" &&
-      sharedFeatureApp !== "openclaw" &&
-      sharedFeatureApp !== "gemini" &&
-      sharedFeatureApp !== "hermes"
-    ) {
-      setCurrentView("providers");
-    }
-  }, [sharedFeatureApp, currentView]);
-
-  const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
-  const [usageProvider, setUsageProvider] = useState<Provider | null>(null);
-  const [confirmAction, setConfirmAction] = useState<{
-    provider: Provider;
-    action: "remove" | "delete";
-  } | null>(null);
-  const [envConflicts, setEnvConflicts] = useState<EnvConflict[]>([]);
-  const [showEnvBanner, setShowEnvBanner] = useState(false);
-
-  const effectiveEditingProvider = useLastValidValue(editingProvider);
-  const effectiveUsageProvider = useLastValidValue(usageProvider);
-
-  const toolbarRef = useRef<HTMLDivElement>(null);
-  const isToolbarCompact = useAutoCompact(toolbarRef);
-
-  useUsageCacheBridge();
-
-  const promptPanelRef = useRef<any>(null);
-  const mcpPanelRef = useRef<any>(null);
-  const skillsPageRef = useRef<any>(null);
-  const unifiedSkillsPanelRef = useRef<any>(null);
-  const addActionButtonClass =
-    "bg-orange-500 hover:bg-orange-600 dark:bg-orange-500 dark:hover:bg-orange-600 text-white shadow-lg shadow-orange-500/30 dark:shadow-orange-500/40 rounded-full w-8 h-8";
-
-  const {
-    isRunning: isProxyRunning,
-    takeoverStatus,
-    status: proxyStatus,
-  } = useProxyStatus();
-  const isCurrentAppTakeoverActive = takeoverStatus?.[activeApp] || false;
-  const activeProviderId = useMemo(() => {
-    const target = proxyStatus?.active_targets?.find(
-      (t) => t.app_type === activeApp,
-    );
-    return target?.provider_id;
-  }, [proxyStatus?.active_targets, activeApp]);
-
-  const { data, isLoading, refetch } = useProvidersQuery(activeApp, {
-    isProxyRunning,
-  });
-  const providers = useMemo(() => data?.providers ?? {}, [data]);
-  const currentProviderId = data?.currentProviderId ?? "";
-  const isOpenClawView =
-    activeApp === "openclaw" &&
-    (currentView === "providers" ||
-      currentView === "workspace" ||
-      currentView === "sessions" ||
-      currentView === "openclawEnv" ||
-      currentView === "openclawTools" ||
-      currentView === "openclawAgents");
-  const { data: openclawHealthWarnings = [] } =
-    useOpenClawHealth(isOpenClawView);
-  const hasSkillsSupport = sharedFeatureApp !== "openclaw";
-  const hasSessionSupport =
-    sharedFeatureApp === "claude" ||
-    sharedFeatureApp === "codex" ||
-    sharedFeatureApp === "opencode" ||
-    sharedFeatureApp === "openclaw" ||
-    sharedFeatureApp === "gemini" ||
-    sharedFeatureApp === "hermes";
-
-  const { data: allSessions } = useSessionsQuery();
-  const frequentDirs = useMemo(() => {
-    if (!allSessions) return [];
-    const counts = new Map<string, number>();
-    for (const s of allSessions) {
-      if (s.projectDir) {
-        counts.set(s.projectDir, (counts.get(s.projectDir) || 0) + 1);
-      }
-    }
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([dir]) => dir);
-  }, [allSessions]);
-
-  const {
-    addProvider,
-    updateProvider,
-    switchProvider,
-    deleteProvider,
-    saveUsageScript,
-    setAsDefaultModel,
-  } = useProviderActions(
-    activeApp,
-    isProxyRunning,
-    isProxyRunning && isCurrentAppTakeoverActive,
-  );
-
-  const disableOmoMutation = useDisableCurrentOmo();
-  const handleDisableOmo = () => {
-    disableOmoMutation.mutate(undefined, {
-      onSuccess: () => {
-        toast.success(t("omo.disabled", { defaultValue: "OMO 已停用" }));
-      },
-      onError: (error: Error) => {
-        toast.error(
-          t("omo.disableFailed", {
-            defaultValue: "停用 OMO 失败: {{error}}",
-            error: extractErrorMessage(error),
-          }),
-        );
-      },
-    });
-  };
-
-  const disableOmoSlimMutation = useDisableCurrentOmoSlim();
-  const handleDisableOmoSlim = () => {
-    disableOmoSlimMutation.mutate(undefined, {
-      onSuccess: () => {
-        toast.success(t("omo.disabled", { defaultValue: "OMO 已停用" }));
-      },
-      onError: (error: Error) => {
-        toast.error(
-          t("omo.disableFailed", {
-            defaultValue: "停用 OMO 失败: {{error}}",
-            error: extractErrorMessage(error),
-          }),
-        );
-      },
-    });
-  };
-
-  useEffect(() => {
-    let unsubscribe: (() => void) | undefined;
-    let active = true;
-
-    const setupListener = async () => {
-      try {
-        const off = await providersApi.onSwitched(
-          async (event: ProviderSwitchEvent) => {
-            if (event.appType === activeApp) {
-              await refetch();
-            }
-          },
-        );
-        if (!active) {
-          off();
-          return;
-        }
-        unsubscribe = off;
-      } catch (error) {
-        console.error("[App] Failed to subscribe provider switch event", error);
-      }
-    };
-
-    void setupListener();
-    return () => {
-      active = false;
-      unsubscribe?.();
-    };
-  }, [activeApp, refetch]);
-
-  useTauriEvent("universal-provider-synced", async () => {
-    await queryClient.invalidateQueries({ queryKey: ["providers"] });
-    try {
-      await providersApi.updateTrayMenu();
-    } catch (error) {
-      console.error("[App] Failed to update tray menu", error);
-    }
-  });
-
-  useTauriEvent<SyncStatusUpdatedPayload | null | undefined>(
-    "webdav-sync-status-updated",
-    async (payload) => {
-      const statusPayload = payload ?? {};
-      await queryClient.invalidateQueries({ queryKey: ["settings"] });
-      if (statusPayload.source !== "auto" || statusPayload.status !== "error") {
-        return;
-      }
-      toast.error(
-        t("settings.webdavSync.autoSyncFailedToast", {
-          error: statusPayload.error || t("common.unknown"),
-        }),
-      );
-    },
-  );
-
-  useTauriEvent<SyncStatusUpdatedPayload | null | undefined>(
-    "s3-sync-status-updated",
-    async (payload) => {
-      const statusPayload = payload ?? {};
-      await queryClient.invalidateQueries({ queryKey: ["settings"] });
-      if (statusPayload.source !== "auto" || statusPayload.status !== "error") {
-        return;
-      }
-      toast.error(
-        t("settings.s3Sync.autoSyncFailedToast", {
-          error: statusPayload.error || t("common.unknown"),
-        }),
-      );
-    },
-  );
-
-  useTauriEvent<{ appType: string; providerName: string }>(
-    "proxy-official-warning",
-    (payload) => {
-      toast.warning(
-        t("notifications.proxyOfficialWarning", {
-          name: payload.providerName,
-          defaultValue: `当前供应商 ${payload.providerName} 是官方供应商，建议切换到第三方供应商后再使用代理接管`,
-        }),
-        { duration: 8000 },
-      );
-    },
-  );
-
-  useEffect(() => {
-    let active = true;
-    let unlistenResize: (() => void) | undefined;
-
-    const setupWindowStateSync = async () => {
-      try {
-        const currentWindow = getCurrentWindow();
-        const syncWindowMaximizedState = async () => {
-          const maximized = await currentWindow.isMaximized();
-          if (active) {
-            setIsWindowMaximized(maximized);
-          }
-        };
-
-        await syncWindowMaximizedState();
-        unlistenResize = await currentWindow.onResized(() => {
-          void syncWindowMaximizedState();
-        });
-      } catch (error) {
-        console.error("[App] Failed to sync window maximized state", error);
-      }
-    };
-
-    void setupWindowStateSync();
-    return () => {
-      active = false;
-      unlistenResize?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    // settingsData 未加载时跳过，避免用 fallback false 覆盖 Rust 侧已设好的装饰状态
-    if (!settingsData) return;
-
-    const syncWindowDecorations = async () => {
-      try {
-        await getCurrentWindow().setDecorations(!useAppWindowControls);
-      } catch (error) {
-        console.error("[App] Failed to update window decorations", error);
-      }
-    };
-
-    void syncWindowDecorations();
-  }, [useAppWindowControls, settingsData]);
-
-  useEffect(() => {
-    const checkEnvOnStartup = async () => {
-      try {
-        const allConflicts = await checkAllEnvConflicts();
-        const flatConflicts = Object.values(allConflicts).flat();
-
-        if (flatConflicts.length > 0) {
-          setEnvConflicts(flatConflicts);
-          const dismissed = sessionStorage.getItem("env_banner_dismissed");
-          if (!dismissed) {
-            setShowEnvBanner(true);
-          }
-        }
-      } catch (error) {
-        console.error(
-          "[App] Failed to check environment conflicts on startup:",
-          error,
-        );
-      }
-    };
-
-    checkEnvOnStartup();
-  }, []);
-
-  useEffect(() => {
-    const checkMigration = async () => {
-      try {
-        const migrated = await invoke<boolean>("get_migration_result");
-        if (migrated) {
-          toast.success(
-            t("migration.success", { defaultValue: "配置迁移成功" }),
-            { closeButton: true },
-          );
-        }
-      } catch (error) {
-        console.error("[App] Failed to check migration result:", error);
-      }
-    };
-
-    checkMigration();
-  }, [t]);
-
-  useEffect(() => {
-    const checkSkillsMigration = async () => {
-      try {
-        const result = await invoke<{ count: number; error?: string } | null>(
-          "get_skills_migration_result",
-        );
-        if (result?.error) {
-          toast.error(t("migration.skillsFailed"), {
-            description: t("migration.skillsFailedDescription"),
-            closeButton: true,
-          });
-          console.error("[App] Skills SSOT migration failed:", result.error);
-          return;
-        }
-        if (result && result.count > 0) {
-          toast.success(t("migration.skillsSuccess", { count: result.count }), {
-            closeButton: true,
-          });
-          await queryClient.invalidateQueries({ queryKey: ["skills"] });
-        }
-      } catch (error) {
-        console.error("[App] Failed to check skills migration result:", error);
-      }
-    };
-
-    checkSkillsMigration();
-  }, [t, queryClient]);
-
-  useEffect(() => {
-    const checkEnvOnSwitch = async () => {
-      try {
-        const conflicts = await checkEnvConflicts(activeApp);
-
-        if (conflicts.length > 0) {
-          setEnvConflicts((prev) => {
-            const existingKeys = new Set(
-              prev.map((c) => `${c.varName}:${c.sourcePath}`),
-            );
-            const newConflicts = conflicts.filter(
-              (c) => !existingKeys.has(`${c.varName}:${c.sourcePath}`),
-            );
-            return [...prev, ...newConflicts];
-          });
-          const dismissed = sessionStorage.getItem("env_banner_dismissed");
-          if (!dismissed) {
-            setShowEnvBanner(true);
-          }
-        }
-      } catch (error) {
-        console.error(
-          "[App] Failed to check environment conflicts on app switch:",
-          error,
-        );
-      }
-    };
-
-    checkEnvOnSwitch();
-  }, [activeApp]);
-
-  const currentViewRef = useRef(currentView);
-
-  useEffect(() => {
-    currentViewRef.current = currentView;
-  }, [currentView]);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "," && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault();
-        setCurrentView("settings");
-        return;
-      }
-
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-
-      if (document.body.style.overflow === "hidden") return;
-
-      const view = currentViewRef.current;
-      if (view === "providers") return;
-
-      if (isTextEditableTarget(event.target)) return;
-
-      event.preventDefault();
-      setCurrentView(view === "skillsDiscovery" ? "skills" : "providers");
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, []);
-
-  const [launchDashboardOpen, setLaunchDashboardOpen] = useState(false);
-  const [launchGuide, setLaunchGuide] = useState<{
-    appId: string;
-    broken: boolean;
-  } | null>(null);
-  // 首次启动引导：高亮底部启动按钮，点击或关闭后不再提示。
-  const [takoExpanded, setTakoExpanded] = useState(true);
-  const [takoSelectedModel, setTakoSelectedModel] = useState(
-    () => localStorage.getItem("tako_selected_model") || "",
-  );
-  const handleTakoModelChange = async (model: string) => {
-    setTakoSelectedModel(model);
-    localStorage.setItem("tako_selected_model", model);
-    if (currentProviderId === "tako-builtin" && providers[currentProviderId]) {
-      const p = providers[currentProviderId];
-      const config = typeof p.settingsConfig === "string"
-        ? JSON.parse(p.settingsConfig || "{}")
-        : { ...(p.settingsConfig || {}) };
-      config.env = config.env || {};
-      if (model) {
-        config.env.ANTHROPIC_MODEL = model;
-      } else {
-        delete config.env.ANTHROPIC_MODEL;
-      }
-      await updateProvider({ ...p, settingsConfig: config });
-    }
-  };
-
-  const openHermesWebUI = useOpenHermesWebUI(() =>
-    setLaunchDashboardOpen(true),
-  );
-
-  const handleOpenWebsite = async (url: string) => {
-    try {
-      await settingsApi.openExternal(url);
-    } catch (error) {
-      const detail =
-        extractErrorMessage(error) ||
-        t("notifications.openLinkFailed", {
-          defaultValue: "链接打开失败",
-        });
-      toast.error(detail);
-    }
-  };
-
-  const handleEditProvider = async ({
-    provider,
-    originalId,
-  }: {
-    provider: Provider;
-    originalId?: string;
-  }) => {
-    await updateProvider(provider, originalId);
-    setEditingProvider(null);
-  };
-
-  const handleConfirmAction = async () => {
-    if (!confirmAction) return;
-    const { provider, action } = confirmAction;
-
-    if (action === "remove") {
-      // Remove from live config only (for additive mode apps like OpenCode/OpenClaw)
-      // Does NOT delete from database - provider remains in the list
-      await providersApi.removeFromLiveConfig(provider.id, activeApp);
-      // Invalidate queries to refresh the isInConfig state
-      if (activeApp === "opencode") {
-        await queryClient.invalidateQueries({
-          queryKey: ["opencodeLiveProviderIds"],
-        });
-      } else if (activeApp === "openclaw") {
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.liveProviderIds,
-        });
-        await queryClient.invalidateQueries({
-          queryKey: openclawKeys.health,
-        });
-      } else if (activeApp === "hermes") {
-        await queryClient.invalidateQueries({
-          queryKey: hermesKeys.liveProviderIds,
-        });
-      }
-      toast.success(
-        t("notifications.removeFromConfigSuccess", {
-          defaultValue: "已从配置移除",
-        }),
-        { closeButton: true },
-      );
-    } else {
-      await deleteProvider(provider.id);
-    }
-    setConfirmAction(null);
-  };
-
-  const generateUniqueProviderCopyKey = (
-    originalKey: string,
-    existingKeys: string[],
-  ): string => {
-    const baseKey = `${originalKey}-copy`;
-
-    if (!existingKeys.includes(baseKey)) {
-      return baseKey;
-    }
-
-    let counter = 2;
-    while (existingKeys.includes(`${baseKey}-${counter}`)) {
-      counter++;
-    }
-    return `${baseKey}-${counter}`;
-  };
-
-  const handleDuplicateProvider = async (provider: Provider) => {
-    const newSortIndex =
-      provider.sortIndex !== undefined ? provider.sortIndex + 1 : undefined;
-
-    const duplicatedProvider: Omit<Provider, "id" | "createdAt"> & {
-      providerKey?: string;
-      addToLive?: boolean;
-    } = {
-      name: `${provider.name} copy`,
-      settingsConfig: deepClone(provider.settingsConfig),
-      websiteUrl: provider.websiteUrl,
-      category: provider.category,
-      sortIndex: newSortIndex, // 复制原 sortIndex + 1
-      meta: provider.meta ? deepClone(provider.meta) : undefined,
-      icon: provider.icon,
-      iconColor: provider.iconColor,
-    };
-
-    if (
-      activeApp === "opencode" ||
-      activeApp === "openclaw" ||
-      activeApp === "hermes"
-    ) {
-      let liveProviderIds: string[] = [];
-      try {
-        liveProviderIds =
-          activeApp === "opencode"
-            ? await queryClient.ensureQueryData({
-                queryKey: ["opencodeLiveProviderIds"],
-                queryFn: () => providersApi.getOpenCodeLiveProviderIds(),
-              })
-            : activeApp === "openclaw"
-              ? await queryClient.ensureQueryData({
-                  queryKey: openclawKeys.liveProviderIds,
-                  queryFn: () => providersApi.getOpenClawLiveProviderIds(),
-                })
-              : await queryClient.ensureQueryData({
-                  queryKey: hermesKeys.liveProviderIds,
-                  queryFn: () => providersApi.getHermesLiveProviderIds(),
-                });
-      } catch (error) {
-        console.error(
-          "[App] Failed to load live provider IDs for duplication",
-          error,
-        );
-        const errorMessage = extractErrorMessage(error);
-        toast.error(
-          t("provider.duplicateLiveIdsLoadFailed", {
-            defaultValue: "读取配置中的供应商标识失败，请先修复配置后再试",
-          }) + (errorMessage ? `: ${errorMessage}` : ""),
-        );
-        return;
-      }
-      const existingKeys = Array.from(
-        new Set([...Object.keys(providers), ...liveProviderIds]),
-      );
-      duplicatedProvider.providerKey = generateUniqueProviderCopyKey(
-        provider.id,
-        existingKeys,
-      );
-      duplicatedProvider.addToLive = false;
-    }
-
-    if (provider.sortIndex !== undefined) {
-      const updates = Object.values(providers)
-        .filter(
-          (p) =>
-            p.sortIndex !== undefined &&
-            p.sortIndex >= newSortIndex! &&
-            p.id !== provider.id,
-        )
-        .map((p) => ({
-          id: p.id,
-          sortIndex: p.sortIndex! + 1,
-        }));
-
-      if (updates.length > 0) {
-        try {
-          await providersApi.updateSortOrder(updates, activeApp);
-        } catch (error) {
-          console.error("[App] Failed to update sort order", error);
-          toast.error(
-            t("provider.sortUpdateFailed", {
-              defaultValue: "排序更新失败",
-            }),
-          );
-          return; // 如果排序更新失败，不继续添加
-        }
-      }
-    }
-
-    await addProvider(duplicatedProvider);
-  };
-
-  const handleOpenTerminal = async (provider: Provider) => {
-    try {
-      // 启动前检测目标 CLI 是否已安装（仅 claude/codex/gemini）；
-      // 未装/损坏则弹安装引导，不直接报错。
-      if (["claude", "codex", "gemini"].includes(activeApp)) {
-        try {
-          const versions = await settingsApi.getToolVersions([activeApp]);
-          const tool = versions.find((v) => v.name === activeApp);
-          if (tool && (!tool.version || tool.installed_but_broken)) {
-            setLaunchGuide({
-              appId: activeApp,
-              broken: tool.installed_but_broken,
-            });
-            return;
-          }
-        } catch (e) {
-          // 检测失败不阻断启动，让后续流程照常（最坏退回原报错）。
-          console.warn("[App] tool version probe failed", e);
-        }
-      }
-
-      const selectedDir = await settingsApi.pickDirectory();
-      if (!selectedDir) {
-        return;
-      }
-
-      await providersApi.openTerminal(provider.id, activeApp, {
-        cwd: selectedDir,
-      });
-      toast.success(
-        t("provider.terminalOpened", {
-          defaultValue: "终端已打开",
-        }),
-      );
-    } catch (error) {
-      console.error("[App] Failed to open terminal", error);
-      const errorMessage = extractErrorMessage(error);
-      toast.error(
-        t("provider.terminalOpenFailed", {
-          defaultValue: "打开终端失败",
-        }) + (errorMessage ? `: ${errorMessage}` : ""),
-      );
-    }
-  };
-
-  const handleQuickLaunch = async (provider: Provider, cwd: string) => {
-    try {
-      await providersApi.openTerminal(provider.id, activeApp, { cwd });
-      toast.success(t("provider.terminalOpened", { defaultValue: "终端已打开" }));
-    } catch (error) {
-      const errorMessage = extractErrorMessage(error);
-      toast.error(
-        t("provider.terminalOpenFailed", { defaultValue: "打开终端失败" }) +
-          (errorMessage ? `: ${errorMessage}` : ""),
-      );
-    }
-  };
-
-  const handleImportSuccess = async () => {
-    try {
-      await queryClient.invalidateQueries({
-        queryKey: ["providers"],
-        refetchType: "all",
-      });
-      await queryClient.refetchQueries({
-        queryKey: ["providers"],
-        type: "all",
-      });
-    } catch (error) {
-      console.error("[App] Failed to refresh providers after import", error);
-      await refetch();
-    }
-    try {
-      await providersApi.updateTrayMenu();
-    } catch (error) {
-      console.error("[App] Failed to refresh tray menu", error);
-    }
-  };
-
-  const notifyWindowControlError = (error: unknown) => {
-    toast.error(
-      t("notifications.windowControlFailed", {
-        defaultValue: "窗口控制失败：{{error}}",
-        error: extractErrorMessage(error),
-      }),
-    );
-  };
-
-  const handleWindowMinimize = async () => {
-    try {
-      await getCurrentWindow().minimize();
-    } catch (error) {
-      console.error("[App] Failed to minimize window", error);
-      notifyWindowControlError(error);
-    }
-  };
-
-  const handleWindowToggleMaximize = async () => {
-    try {
-      const currentWindow = getCurrentWindow();
-      await currentWindow.toggleMaximize();
-      setIsWindowMaximized(await currentWindow.isMaximized());
-    } catch (error) {
-      console.error("[App] Failed to toggle maximize", error);
-      notifyWindowControlError(error);
-    }
-  };
-
-  const handleWindowClose = async () => {
-    try {
-      await getCurrentWindow().close();
-    } catch (error) {
-      console.error("[App] Failed to close window", error);
-      notifyWindowControlError(error);
-    }
-  };
-
-  const renderContent = () => {
-    const content = (() => {
-      switch (currentView) {
-        case "settings":
-          return (
-            <SettingsPage
-              open={true}
-              onOpenChange={() => setCurrentView("providers")}
-              onImportSuccess={handleImportSuccess}
-              defaultTab={settingsDefaultTab}
-            />
-          );
-        case "prompts":
-          return (
-            <PromptPanel
-              ref={promptPanelRef}
-              open={true}
-              onOpenChange={() => setCurrentView("providers")}
-              appId={sharedFeatureApp}
-            />
-          );
-        case "hermesMemory":
-          return <HermesMemoryPanel />;
-        case "skills":
-          return (
-            <UnifiedSkillsPanel
-              ref={unifiedSkillsPanelRef}
-              onOpenDiscovery={() => setCurrentView("skillsDiscovery")}
-              currentApp={
-                sharedFeatureApp === "openclaw" ? "claude" : sharedFeatureApp
-              }
-            />
-          );
-        case "skillsDiscovery":
-          return (
-            <SkillsPage
-              ref={skillsPageRef}
-              initialApp={
-                sharedFeatureApp === "openclaw" ? "claude" : sharedFeatureApp
-              }
-            />
-          );
-        case "mcp":
-          return (
-            <UnifiedMcpPanel
-              ref={mcpPanelRef}
-              onOpenChange={() => setCurrentView("providers")}
-            />
-          );
-        case "agents":
-          return (
-            <AgentsPanel onOpenChange={() => setCurrentView("providers")} />
-          );
-        case "universal":
-          return (
-            <div className="px-6 pt-4">
-              <UniversalProviderPanel />
-            </div>
-          );
-
-        case "sessions":
-          return (
-            <SessionManagerPage
-              key={sharedFeatureApp}
-              appId={sharedFeatureApp}
-            />
-          );
-        case "workspace":
-          return <WorkspaceFilesPanel />;
-        case "openclawEnv":
-          return <EnvPanel />;
-        case "openclawTools":
-          return <ToolsPanel />;
-        case "openclawAgents":
-          return <AgentsDefaultsPanel />;
-        default:
-          return (
-            <div className="px-6 flex flex-col flex-1 min-h-0 overflow-hidden">
-              <div
-                className="flex-1 overflow-y-auto overflow-x-hidden pb-12 px-1"
-                onScroll={(e) => {
-                  if (currentProviderId === "tako-builtin" && (e.currentTarget as HTMLDivElement).scrollTop > 30) {
-                    setTakoExpanded(false);
-                  }
-                }}
-              >
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={activeApp}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
-                    className="space-y-4"
-                  >
-                    <ProviderList
-                      providers={providers}
-                      currentProviderId={currentProviderId}
-                      appId={activeApp}
-                      isLoading={isLoading}
-                      isProxyRunning={isProxyRunning}
-                      isProxyTakeover={
-                        isProxyRunning && isCurrentAppTakeoverActive
-                      }
-                      activeProviderId={activeProviderId}
-                      onSwitch={switchProvider}
-                      onEdit={(provider) => {
-                        setEditingProvider(provider);
-                      }}
-                      onDelete={(provider) =>
-                        setConfirmAction({ provider, action: "delete" })
-                      }
-                      onRemoveFromConfig={
-                        activeApp === "opencode" ||
-                        activeApp === "openclaw" ||
-                        activeApp === "hermes"
-                          ? (provider) =>
-                              setConfirmAction({ provider, action: "remove" })
-                          : undefined
-                      }
-                      onDisableOmo={
-                        activeApp === "opencode" ? handleDisableOmo : undefined
-                      }
-                      onDisableOmoSlim={
-                        activeApp === "opencode"
-                          ? handleDisableOmoSlim
-                          : undefined
-                      }
-                      onDuplicate={handleDuplicateProvider}
-                      onConfigureUsage={setUsageProvider}
-                      onOpenWebsite={handleOpenWebsite}
-                      onOpenTerminal={handleOpenTerminal}
-                      onCreate={() => setIsAddOpen(true)}
-                      onSetAsDefault={
-                        activeApp === "openclaw"
-                          ? setAsDefaultModel
-                          : activeApp === "hermes"
-                            ? switchProvider
-                            : undefined
-                      }
-                    />
-                    {currentProviderId && providers[currentProviderId] && (
-                      currentProviderId === "tako-builtin" ? (
-                        <TakoLaunchPanel
-                          provider={providers[currentProviderId]}
-                          expanded={takoExpanded}
-                          frequentDirs={frequentDirs}
-                          selectedModel={takoSelectedModel}
-                          onModelChange={handleTakoModelChange}
-                          onLaunch={(cwd) => handleQuickLaunch(providers[currentProviderId], cwd)}
-                          onBrowseLaunch={() => handleOpenTerminal(providers[currentProviderId])}
-                          onViewSessions={() => setCurrentView("sessions")}
-                          onExpand={() => setTakoExpanded(true)}
-                        />
-                      ) : (
-                        <div className="sticky bottom-0 -mx-1 mt-2 border-t border-border bg-background/95 px-1 py-3 backdrop-blur space-y-2">
-                          {frequentDirs.length > 0 && (
-                            <div className="space-y-1.5">
-                              <p className="text-xs font-medium text-muted-foreground px-1">
-                                {t("provider.frequentDirs", { defaultValue: "常用目录" })}
-                              </p>
-                              <div className="flex flex-wrap gap-1.5">
-                                {frequentDirs.map((dir) => (
-                                  <button
-                                    key={dir}
-                                    type="button"
-                                    onClick={() => handleQuickLaunch(providers[currentProviderId], dir)}
-                                    className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-xs text-foreground/80 transition-colors hover:bg-[var(--app-link)]/10 hover:border-[var(--app-link)]/30 hover:text-foreground truncate max-w-[200px]"
-                                    title={dir}
-                                  >
-                                    <Terminal className="h-3 w-3 shrink-0 opacity-50" />
-                                    <span className="truncate">{dir.replace(/^\/Users\/[^/]+\//, "~/")}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          <Button
-                            variant={frequentDirs.length > 0 ? "outline" : "default"}
-                            size="default"
-                            className="w-full gap-2"
-                            onClick={() => handleOpenTerminal(providers[currentProviderId])}
-                          >
-                            <FolderOpen className="h-4 w-4" />
-                            {t("provider.launchBrowse", { defaultValue: "选择文件夹启动" })}
-                            {" · "}
-                            {providers[currentProviderId].name}
-                          </Button>
-                        </div>
-                      )
-                    )}
-                  </motion.div>
-                </AnimatePresence>
-              </div>
-            </div>
-          );
-      }
-    })();
-
-    return (
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={currentView}
-          className="flex-1 min-h-0"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
-        >
-          {content}
-        </motion.div>
-      </AnimatePresence>
-    );
-  };
-
+function QuotaPill({
+  label,
+  used,
+  limit,
+}: {
+  label: string;
+  used: number;
+  limit: number;
+}) {
+  if (limit <= 0) return null;
+  const pct = Math.min(100, Math.max(0, Math.round((used / limit) * 100)));
+  const barColor =
+    pct >= 90 ? "bg-rose-500" : pct >= 70 ? "bg-amber-500" : "bg-emerald-500";
   return (
-    <div
-      className="flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/30 pb-4"
-      style={{ overflowX: "hidden", paddingTop: contentTopOffset }}
-    >
-      {(dragBarHeight > 0 || useAppWindowControls) && (
-        <div
-          className="fixed top-0 left-0 right-0 z-[70] flex items-center justify-end px-2"
-          data-tauri-drag-region
-          style={{ WebkitAppRegion: "drag", height: dragBarHeight } as any}
-        >
-          {useAppWindowControls && (
-            <div
-              className="flex items-center gap-1"
-              style={{ WebkitAppRegion: "no-drag" } as any}
-            >
-              <img
-                src={takoTitlebarIcon}
-                alt="Tako Switch"
-                className="h-5 w-5 rounded mr-1"
-                draggable={false}
-              />
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => void handleWindowMinimize()}
-                title={t("header.windowMinimize")}
-                className="h-7 w-7"
-              >
-                <Minus className="w-4 h-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => void handleWindowToggleMaximize()}
-                title={
-                  isWindowMaximized
-                    ? t("header.windowRestore")
-                    : t("header.windowMaximize")
-                }
-                className="h-7 w-7"
-              >
-                {isWindowMaximized ? (
-                  <Minimize2 className="w-4 h-4" />
-                ) : (
-                  <Maximize2 className="w-4 h-4" />
-                )}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => void handleWindowClose()}
-                title={t("header.windowClose")}
-                className="h-7 w-7 hover:bg-red-500/15 hover:text-red-500"
-              >
-                <X className="w-4 h-4" />
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-      {showEnvBanner && envConflicts.length > 0 && (
-        <EnvWarningBanner
-          conflicts={envConflicts}
-          onDismiss={() => {
-            setShowEnvBanner(false);
-            sessionStorage.setItem("env_banner_dismissed", "true");
-          }}
-          onDeleted={async () => {
-            try {
-              const allConflicts = await checkAllEnvConflicts();
-              const flatConflicts = Object.values(allConflicts).flat();
-              setEnvConflicts(flatConflicts);
-              if (flatConflicts.length === 0) {
-                setShowEnvBanner(false);
-              }
-            } catch (error) {
-              console.error(
-                "[App] Failed to re-check conflicts after deletion:",
-                error,
-              );
-            }
-          }}
-        />
-      )}
-
-      <header
-        className="fixed z-50 w-full transition-all duration-300 bg-background/80 backdrop-blur-md"
-        {...DRAG_REGION_ATTR}
-        style={
-          {
-            ...DRAG_REGION_STYLE,
-            top: dragBarHeight,
-            height: HEADER_HEIGHT,
-          } as any
-        }
-      >
-        <div
-          className="flex h-full items-center justify-between gap-2 px-6"
-          {...DRAG_REGION_ATTR}
-          style={{ ...DRAG_REGION_STYLE } as any}
-        >
-          <div
-            className="flex items-center gap-1"
-            style={{ WebkitAppRegion: "no-drag" } as any}
-          >
-            {currentView !== "providers" ? (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() =>
-                    setCurrentView(
-                      currentView === "skillsDiscovery"
-                        ? "skills"
-                        : "providers",
-                    )
-                  }
-                  className="mr-2 rounded-lg"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                </Button>
-                <h1 className="text-lg font-semibold">
-                  {currentView === "settings" && t("settings.title")}
-                  {currentView === "prompts" &&
-                    t("prompts.title", {
-                      appName: t(`apps.${sharedFeatureApp}`),
-                    })}
-                  {currentView === "skills" && t("skills.title")}
-                  {currentView === "skillsDiscovery" && t("skills.title")}
-                  {currentView === "mcp" && t("mcp.unifiedPanel.title")}
-                  {currentView === "agents" && t("agents.title")}
-                  {currentView === "universal" &&
-                    t("universalProvider.title", {
-                      defaultValue: "统一供应商",
-                    })}
-                  {currentView === "sessions" && t("sessionManager.title")}
-                  {currentView === "workspace" && t("workspace.title")}
-                  {currentView === "openclawEnv" && t("openclaw.env.title")}
-                  {currentView === "openclawTools" && t("openclaw.tools.title")}
-                  {currentView === "openclawAgents" &&
-                    t("openclaw.agents.title")}
-                  {currentView === "hermesMemory" && t("hermes.memory.title")}
-                </h1>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <span
-                  className="flex h-5 w-5 items-center justify-center opacity-60"
-                  dangerouslySetInnerHTML={{ __html: getIcon("tako") }}
-                />
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => {
-                    setSettingsDefaultTab("general");
-                    setCurrentView("settings");
-                  }}
-                  title={t("common.settings")}
-                  className="hover:bg-black/5 dark:hover:bg-white/5"
-                >
-                  <Settings className="w-4 h-4" />
-                </Button>
-                <UpdateBadge
-                  onClick={() => {
-                    setSettingsDefaultTab("about");
-                    setCurrentView("settings");
-                  }}
-                />
-                {isCurrentAppTakeoverActive && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => {
-                      setSettingsDefaultTab("usage");
-                      setCurrentView("settings");
-                    }}
-                    title={t("usage.title", {
-                      defaultValue: "使用统计",
-                    })}
-                    className="hover:bg-black/5 dark:hover:bg-white/5"
-                  >
-                    <BarChart2 className="w-4 h-4" />
-                  </Button>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="flex flex-1 min-w-0 items-center justify-end gap-1.5">
-            <a
-              href="https://tako.shiroha.tech"
-              target="_blank"
-              rel="noreferrer"
-              style={{ WebkitAppRegion: "no-drag" } as any}
-              className={cn(
-                "text-sm font-semibold transition-colors",
-                isProxyRunning && isCurrentAppTakeoverActive
-                  ? "text-emerald-500 hover:text-emerald-600 dark:text-emerald-400 dark:hover:text-emerald-300"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              Tako Switch
-            </a>
-            <TakoAuthButton />
-            {currentView === "providers" &&
-              activeApp !== "opencode" &&
-              activeApp !== "openclaw" &&
-              activeApp !== "hermes" && (
-                <div
-                  className="flex shrink-0 items-center gap-1.5"
-                  style={{ WebkitAppRegion: "no-drag" } as any}
-                >
-                  {activeApp === "claude-desktop" ? (
-                    <ClaudeDesktopRouteToggle />
-                  ) : (
-                    settingsData?.enableLocalProxy && (
-                      <ProxyToggle activeApp={activeApp} />
-                    )
-                  )}
-                  {activeApp !== "claude-desktop" &&
-                    settingsData?.enableFailoverToggle && (
-                      <FailoverToggle activeApp={activeApp} />
-                    )}
-                </div>
-              )}
-            <div
-              ref={toolbarRef}
-              className="flex flex-1 min-w-0 overflow-x-hidden items-center py-4 pr-2"
-            >
-              <div
-                className="flex shrink-0 items-center gap-1.5 ml-auto"
-                style={{ WebkitAppRegion: "no-drag" } as any}
-              >
-                {currentView === "prompts" && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => promptPanelRef.current?.openAdd()}
-                    className="hover:bg-black/5 dark:hover:bg-white/5"
-                  >
-                    <Plus className="w-4 h-4 mr-2" />
-                    {t("prompts.add")}
-                  </Button>
-                )}
-                {currentView === "mcp" && (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => mcpPanelRef.current?.openImport()}
-                      className="hover:bg-black/5 dark:hover:bg-white/5"
-                    >
-                      <Download className="w-4 h-4 mr-2" />
-                      {t("mcp.importExisting")}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => mcpPanelRef.current?.openAdd()}
-                      className="hover:bg-black/5 dark:hover:bg-white/5"
-                    >
-                      <Plus className="w-4 h-4 mr-2" />
-                      {t("mcp.addMcp")}
-                    </Button>
-                  </>
-                )}
-                {currentView === "skills" && (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        unifiedSkillsPanelRef.current?.openRestoreFromBackup()
-                      }
-                      className="hover:bg-black/5 dark:hover:bg-white/5"
-                    >
-                      <History className="w-4 h-4 mr-2" />
-                      {t("skills.restoreFromBackup.button")}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        unifiedSkillsPanelRef.current?.openInstallFromZip()
-                      }
-                      className="hover:bg-black/5 dark:hover:bg-white/5"
-                    >
-                      <FolderArchive className="w-4 h-4 mr-2" />
-                      {t("skills.installFromZip.button")}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        unifiedSkillsPanelRef.current?.openImport()
-                      }
-                      className="hover:bg-black/5 dark:hover:bg-white/5"
-                    >
-                      <Download className="w-4 h-4 mr-2" />
-                      {t("skills.import")}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setCurrentView("skillsDiscovery")}
-                      className="hover:bg-black/5 dark:hover:bg-white/5"
-                    >
-                      <Search className="w-4 h-4 mr-2" />
-                      {t("skills.discover")}
-                    </Button>
-                  </>
-                )}
-                {currentView === "skillsDiscovery" && (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => skillsPageRef.current?.refresh()}
-                      className="hover:bg-black/5 dark:hover:bg-white/5"
-                    >
-                      <RefreshCw className="w-4 h-4 mr-2" />
-                      {t("skills.refresh")}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => skillsPageRef.current?.openRepoManager()}
-                      className="hover:bg-black/5 dark:hover:bg-white/5"
-                    >
-                      <Settings className="w-4 h-4 mr-2" />
-                      {t("skills.repoManager")}
-                    </Button>
-                  </>
-                )}
-                {currentView === "providers" && (
-                  <>
-                    <AppSwitcher
-                      activeApp={activeApp}
-                      onSwitch={setActiveApp}
-                      visibleApps={visibleApps}
-                      compact={isToolbarCompact}
-                    />
-
-                    <div className="flex items-center gap-1 p-1 bg-muted rounded-xl">
-                      <AnimatePresence mode="wait">
-                        <motion.div
-                          key={
-                            activeApp === "openclaw"
-                              ? "openclaw"
-                              : activeApp === "hermes"
-                                ? "hermes"
-                                : "default"
-                          }
-                          className="flex items-center gap-1"
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          transition={{ duration: 0.15 }}
-                        >
-                          {activeApp === "hermes" ? (
-                            <>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("skills")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("skills.manage")}
-                              >
-                                <Wrench className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("hermesMemory")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("hermes.memory.title")}
-                              >
-                                <Brain className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => void openHermesWebUI()}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("hermes.webui.open")}
-                              >
-                                <LayoutDashboard className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("mcp")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("mcp.title")}
-                              >
-                                <McpIcon size={16} />
-                              </Button>
-                            </>
-                          ) : activeApp === "openclaw" ? (
-                            <>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("workspace")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("workspace.manage")}
-                              >
-                                <FolderOpen className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("openclawEnv")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("openclaw.env.title")}
-                              >
-                                <KeyRound className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("openclawTools")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("openclaw.tools.title")}
-                              >
-                                <Shield className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("openclawAgents")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("openclaw.agents.title")}
-                              >
-                                <Cpu className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("sessions")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("sessionManager.title")}
-                              >
-                                <History className="w-4 h-4" />
-                              </Button>
-                            </>
-                          ) : (
-                            <>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("skills")}
-                                className={cn(
-                                  "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5",
-                                  "transition-all duration-200 ease-in-out overflow-hidden",
-                                  hasSkillsSupport
-                                    ? "opacity-100 w-8 scale-100 px-2"
-                                    : "opacity-0 w-0 scale-75 pointer-events-none px-0 -ml-1",
-                                )}
-                                title={t("skills.manage")}
-                              >
-                                <Wrench className="flex-shrink-0 w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("prompts")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("prompts.manage")}
-                              >
-                                <Book className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("sessions")}
-                                className={cn(
-                                  "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5",
-                                  "transition-all duration-200 ease-in-out overflow-hidden",
-                                  hasSessionSupport
-                                    ? "opacity-100 w-8 scale-100 px-2"
-                                    : "opacity-0 w-0 scale-75 pointer-events-none px-0 -ml-1",
-                                )}
-                                title={t("sessionManager.title")}
-                              >
-                                <History className="flex-shrink-0 w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setCurrentView("mcp")}
-                                className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5 w-8 px-2"
-                                title={t("mcp.title")}
-                              >
-                                <McpIcon size={16} />
-                              </Button>
-                            </>
-                          )}
-                        </motion.div>
-                      </AnimatePresence>
-                    </div>
-
-                    <Button
-                      onClick={() => setIsAddOpen(true)}
-                      size="icon"
-                      className={`ml-2 ${addActionButtonClass}`}
-                    >
-                      <Plus className="w-5 h-5" />
-                    </Button>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <main className="flex-1 min-h-0 flex flex-col overflow-y-auto animate-fade-in">
-        {isOpenClawView && openclawHealthWarnings.length > 0 && (
-          <OpenClawHealthBanner warnings={openclawHealthWarnings} />
-        )}
-        {renderContent()}
-      </main>
-
-      <AddProviderDialog
-        open={isAddOpen}
-        onOpenChange={setIsAddOpen}
-        appId={activeApp}
-        onSubmit={addProvider}
-      />
-
-      <EditProviderDialog
-        open={Boolean(editingProvider)}
-        provider={effectiveEditingProvider}
-        onOpenChange={(open) => {
-          if (!open) {
-            setEditingProvider(null);
-          }
-        }}
-        onSubmit={handleEditProvider}
-        appId={activeApp}
-        isProxyTakeover={isCurrentAppTakeoverActive}
-      />
-
-      {effectiveUsageProvider && (
-        <UsageScriptModal
-          key={effectiveUsageProvider.id}
-          provider={effectiveUsageProvider}
-          appId={activeApp}
-          isOpen={Boolean(usageProvider)}
-          onClose={() => setUsageProvider(null)}
-          onSave={(script) => {
-            if (usageProvider) {
-              void saveUsageScript(usageProvider, script);
-            }
-          }}
-        />
-      )}
-
-      <ConfirmDialog
-        isOpen={Boolean(confirmAction)}
-        title={
-          confirmAction?.action === "remove"
-            ? t("confirm.removeProvider")
-            : t("confirm.deleteProvider")
-        }
-        message={
-          confirmAction
-            ? confirmAction.action === "remove"
-              ? t("confirm.removeProviderMessage", {
-                  name: confirmAction.provider.name,
-                })
-              : t("confirm.deleteProviderMessage", {
-                  name: confirmAction.provider.name,
-                })
-            : ""
-        }
-        onConfirm={() => void handleConfirmAction()}
-        onCancel={() => setConfirmAction(null)}
-      />
-
-      {launchGuide && (
-        <LaunchGuideDialog
-          isOpen={true}
-          appId={launchGuide.appId}
-          broken={launchGuide.broken}
-          onClose={() => setLaunchGuide(null)}
-        />
-      )}
-
-      <ConfirmDialog
-        isOpen={launchDashboardOpen}
-        title={t("hermes.webui.launchConfirmTitle")}
-        message={t("hermes.webui.launchConfirmMessage")}
-        confirmText={t("hermes.webui.launchConfirmAction")}
-        variant="info"
-        onConfirm={() => {
-          setLaunchDashboardOpen(false);
-          void (async () => {
-            try {
-              await hermesApi.launchDashboard();
-              toast.success(t("hermes.webui.launching"));
-            } catch (error) {
-              toast.error(t("hermes.webui.launchFailed"), {
-                description: extractErrorMessage(error) || undefined,
-              });
-            }
-          })();
-        }}
-        onCancel={() => setLaunchDashboardOpen(false)}
-      />
-
-      <DeepLinkImportDialog />
-      <FirstRunNoticeDialog />
-      <MigrationPromptDialog />
-      <LoginPromptDialog />
+    <div className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300">
+      <span className="font-medium text-slate-500 dark:text-slate-400">{label}</span>
+      <div className="h-1.5 w-12 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+        <div className={`h-full ${barColor}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="tabular-nums">{pct}%</span>
     </div>
   );
 }
 
-export default App;
+export default function App() {
+  const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
+  const [updates, setUpdates] = useState<Record<AppId, AppUpdateStatus | undefined>>({
+    codex: undefined,
+    claude: undefined,
+    antigravity: undefined,
+  });
+  const [busyApp, setBusyApp] = useState<AppId | null>(null);
+  const [progressByApp, setProgressByApp] = useState<
+    Partial<Record<AppId, InstallProgressEvent>>
+  >({});
+  const [authBusy, setAuthBusy] = useState(false);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [selfUpdate, setSelfUpdate] = useState<Update | null>(null);
+  const [selfUpdating, setSelfUpdating] = useState(false);
+
+  const [banner, setBanner] = useState<{ kind: "err" | "ok"; text: string } | null>(
+    null
+  );
+  const [showKeyModal, setShowKeyModal] = useState(false);
+  const [keyInput, setKeyInput] = useState("");
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [diagModal, setDiagModal] = useState<{
+    name: string;
+    hasBackup: boolean;
+    result: DiagnosticResult;
+  } | null>(null);
+
+  const [settingsForm, setSettingsForm] = useState({
+    baseUrl: "",
+    agyApiKey: "",
+    manifestUrl: "",
+    fallbackManifestUrl: "",
+    autoCheckUpdates: true,
+    outputDir: "",
+    consultModel: "",
+  });
+
+  const loadDashboard = useCallback(async (refreshAccount: boolean) => {
+    try {
+      const data = await api.getDashboard(refreshAccount);
+      setDashboard(data);
+      setSettingsForm({
+        baseUrl: data.state.baseUrl,
+        agyApiKey: data.state.agyApiKey ?? "",
+        manifestUrl: data.state.manifestUrl,
+        fallbackManifestUrl: data.state.fallbackManifestUrl,
+        autoCheckUpdates: data.state.autoCheckUpdates,
+        outputDir: data.state.mcp.outputDir,
+        consultModel: data.state.mcp.consultModel,
+      });
+    } catch (err) {
+      setBanner({ kind: "err", text: String(err) });
+    }
+  }, []);
+
+  const runUpdateChecks = useCallback(async () => {
+    setCheckingUpdates(true);
+    try {
+      const [manifestRes, appUpd] = await Promise.allSettled([
+        api.checkAppUpdates(),
+        check(),
+      ]);
+      if (manifestRes.status === "fulfilled") {
+        const next: Record<AppId, AppUpdateStatus | undefined> = {
+          codex: undefined,
+          claude: undefined,
+          antigravity: undefined,
+        };
+        for (const u of manifestRes.value.updates) {
+          next[u.appId] = u;
+        }
+        setUpdates(next);
+      }
+      if (appUpd.status === "fulfilled" && appUpd.value) {
+        setSelfUpdate(appUpd.value);
+      }
+    } finally {
+      setCheckingUpdates(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadDashboard(true);
+    void runUpdateChecks();
+
+    const unlistenProgress = listen<InstallProgressEvent>("install-progress", (e) => {
+      setProgressByApp((prev) => ({ ...prev, [e.payload.appId]: e.payload }));
+    });
+    const unlistenState = listen("state-changed", () => {
+      void loadDashboard(false);
+    });
+    const unlistenUpdates = listen("request-check-updates", () => {
+      void runUpdateChecks();
+    });
+
+    return () => {
+      void unlistenProgress.then((fn) => fn());
+      void unlistenState.then((fn) => fn());
+      void unlistenUpdates.then((fn) => fn());
+    };
+  }, [loadDashboard, runUpdateChecks]);
+
+  const handleOAuthLogin = async () => {
+    setAuthBusy(true);
+    setBanner(null);
+    try {
+      const account = await api.loginOAuth();
+      setDashboard((prev) => (prev ? { ...prev, account } : prev));
+      setBanner({ kind: "ok", text: "Tako 账号登录成功" });
+    } catch (err) {
+      setBanner({ kind: "err", text: String(err) });
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleKeySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!keyInput.trim()) return;
+    setAuthBusy(true);
+    setBanner(null);
+    try {
+      const account = await api.loginWithKey(keyInput.trim());
+      setDashboard((prev) => (prev ? { ...prev, account } : prev));
+      setKeyInput("");
+      setShowKeyModal(false);
+      setBanner({ kind: "ok", text: "Key 验证成功" });
+    } catch (err) {
+      setBanner({ kind: "err", text: String(err) });
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    setAuthBusy(true);
+    try {
+      const account = await api.logoutAccount();
+      setDashboard((prev) => (prev ? { ...prev, account } : prev));
+    } catch (err) {
+      setBanner({ kind: "err", text: String(err) });
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleModeSwitch = async (appId: AppId, mode: AppMode) => {
+    setBusyApp(appId);
+    setBanner(null);
+    try {
+      const updated = await api.setAppMode(appId, mode, false);
+      setDashboard((prev) =>
+        prev
+          ? {
+              ...prev,
+              apps: prev.apps.map((a) => (a.id === appId ? updated : a)),
+            }
+          : prev
+      );
+      if (updated.running) {
+        setBanner({
+          kind: "ok",
+          text: `${updated.name} 配置已切换，点击“重启生效”使其应用新模式`,
+        });
+      }
+    } catch (err) {
+      setBanner({ kind: "err", text: String(err) });
+    } finally {
+      setBusyApp(null);
+    }
+  };
+
+  const handleRestartOrLaunch = async (snap: AppSnapshot) => {
+    setBusyApp(snap.id);
+    setBanner(null);
+    try {
+      const updated = snap.running
+        ? await api.restartApp(snap.id)
+        : await api.launchApp(snap.id);
+      setDashboard((prev) =>
+        prev
+          ? {
+              ...prev,
+              apps: prev.apps.map((a) => (a.id === snap.id ? updated : a)),
+            }
+          : prev
+      );
+    } catch (err) {
+      setBanner({ kind: "err", text: String(err) });
+    } finally {
+      setBusyApp(null);
+    }
+  };
+
+  const handleInstallOrUpgrade = async (appId: AppId) => {
+    setBusyApp(appId);
+    setBanner(null);
+    try {
+      const outcome = await api.installOrUpgradeApp(appId);
+      setDashboard((prev) =>
+        prev
+          ? {
+              ...prev,
+              apps: prev.apps.map((a) => (a.id === appId ? outcome.snapshot : a)),
+            }
+          : prev
+      );
+      setUpdates((prev) => ({
+        ...prev,
+        [appId]: prev[appId] ? { ...prev[appId]!, hasUpdate: false, installed: true } : undefined,
+      }));
+      setBanner({
+        kind: "ok",
+        text: `${outcome.snapshot.name} 安装/更新完成`,
+      });
+    } catch (err) {
+      setBanner({ kind: "err", text: String(err) });
+    } finally {
+      setBusyApp(null);
+      setProgressByApp((prev) => {
+        const next = { ...prev };
+        delete next[appId];
+        return next;
+      });
+    }
+  };
+
+  const handleToggleMcpTool = async (
+    toolKey: keyof Pick<McpToolsConfig, "image" | "video" | "audio" | "search" | "consult">
+  ) => {
+    if (!dashboard) return;
+    const nextMcp: McpToolsConfig = {
+      ...dashboard.state.mcp,
+      [toolKey]: !dashboard.state.mcp[toolKey],
+    };
+    try {
+      const nextState = await api.saveSettings({ mcp: nextMcp });
+      setDashboard((prev) => (prev ? { ...prev, state: nextState } : prev));
+    } catch (err) {
+      setBanner({ kind: "err", text: String(err) });
+    }
+  };
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!dashboard) return;
+    try {
+      const nextState = await api.saveSettings({
+        baseUrl: settingsForm.baseUrl,
+        agyApiKey: settingsForm.agyApiKey.trim(),
+        manifestUrl: settingsForm.manifestUrl,
+        fallbackManifestUrl: settingsForm.fallbackManifestUrl,
+        autoCheckUpdates: settingsForm.autoCheckUpdates,
+        mcp: {
+          ...dashboard.state.mcp,
+          outputDir: settingsForm.outputDir,
+          consultModel: settingsForm.consultModel,
+        },
+      });
+      setDashboard((prev) => (prev ? { ...prev, state: nextState } : prev));
+      setShowSettingsModal(false);
+      setBanner({ kind: "ok", text: "设置已保存" });
+    } catch (err) {
+      setBanner({ kind: "err", text: String(err) });
+    }
+  };
+
+  const handleSelfUpdate = async () => {
+    if (!selfUpdate) return;
+    setSelfUpdating(true);
+    try {
+      await selfUpdate.downloadAndInstall();
+      await relaunch();
+    } catch (err) {
+      setBanner({ kind: "err", text: `应用自更新失败: ${String(err)}` });
+      setSelfUpdating(false);
+    }
+  };
+
+  const handleDiagnose = async (snap: AppSnapshot) => {
+    try {
+      const result = await api.diagnoseApp(snap.id);
+      setDiagModal({ name: snap.name, hasBackup: snap.hasBackup, result });
+    } catch (err) {
+      setBanner({ kind: "err", text: String(err) });
+    }
+  };
+
+  const acct = dashboard?.account;
+
+  return (
+    <div className="flex h-screen flex-col justify-between bg-slate-50 px-4 py-3 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+      {/* Header */}
+      <header className="flex items-center justify-between gap-2 border-b border-slate-200/80 pb-2.5 dark:border-slate-800">
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-sky-500 to-cyan-500 text-xs font-bold text-white shadow-sm">
+            T
+          </div>
+          <div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-semibold tracking-tight">Tako Switch</span>
+              <span className="rounded bg-slate-200/80 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-400">
+                v{dashboard?.appVersion ?? "2.0.0"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {acct?.loggedIn ? (
+            <div className="flex items-center gap-2.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 shadow-xs dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex flex-col leading-tight">
+                <span className="text-xs font-medium">
+                  {acct.userName || acct.maskedKey || "已登录"}
+                </span>
+                {acct.planName && (
+                  <span className="text-[10px] text-sky-600 dark:text-sky-400">
+                    {acct.planName}
+                  </span>
+                )}
+              </div>
+              {acct.quota && (
+                <div className="flex items-center gap-2 border-l border-slate-200 pl-2 dark:border-slate-700">
+                  <QuotaPill
+                    label="5h"
+                    used={acct.quota.windowUsed}
+                    limit={acct.quota.windowCostLimit}
+                  />
+                  <QuotaPill
+                    label="7d"
+                    used={acct.quota.weeklyUsed}
+                    limit={acct.quota.weeklyCostLimit}
+                  />
+                </div>
+              )}
+              <button
+                onClick={handleLogout}
+                disabled={authBusy}
+                title="退出登录"
+                className="rounded p-1 text-slate-400 transition hover:bg-slate-100 hover:text-rose-500 dark:hover:bg-slate-800"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setShowKeyModal(true)}
+                disabled={authBusy}
+                className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                <KeyRound className="h-3.5 w-3.5" />
+                填入 Key
+              </button>
+              <button
+                onClick={handleOAuthLogin}
+                disabled={authBusy}
+                className="flex items-center gap-1 rounded-md bg-sky-600 px-2.5 py-1 text-xs font-medium text-white shadow-xs transition hover:bg-sky-500 disabled:opacity-60"
+              >
+                <LogIn className="h-3.5 w-3.5" />
+                {authBusy ? "授权中…" : "登录 Tako"}
+              </button>
+            </div>
+          )}
+
+          <button
+            onClick={runUpdateChecks}
+            disabled={checkingUpdates}
+            title="检查应用更新"
+            className="rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 transition hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${checkingUpdates ? "animate-spin" : ""}`} />
+          </button>
+          <button
+            onClick={() => setShowSettingsModal(true)}
+            title="高级设置"
+            className="rounded-md border border-slate-200 bg-white p-1.5 text-slate-600 transition hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            <Settings className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </header>
+
+      {/* Self-update or status banner */}
+      {selfUpdate && (
+        <div className="mt-2 flex items-center justify-between rounded-lg border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs text-sky-900 dark:border-sky-800/70 dark:bg-sky-950/60 dark:text-sky-200">
+          <span>
+            发现新版本 <strong>v{selfUpdate.version}</strong> 可用
+          </span>
+          <button
+            onClick={handleSelfUpdate}
+            disabled={selfUpdating}
+            className="rounded bg-sky-600 px-2.5 py-0.5 font-medium text-white hover:bg-sky-500 disabled:opacity-60"
+          >
+            {selfUpdating ? "更新中…" : "立即更新并重启"}
+          </button>
+        </div>
+      )}
+
+      {banner && (
+        <div
+          className={`mt-2 flex items-center justify-between rounded-lg border px-3 py-1.5 text-xs ${
+            banner.kind === "err"
+              ? "border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-800/70 dark:bg-rose-950/50 dark:text-rose-200"
+              : "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800/70 dark:bg-emerald-950/50 dark:text-emerald-200"
+          }`}
+        >
+          <span className="truncate pr-2">{banner.text}</span>
+          <button onClick={() => setBanner(null)} className="shrink-0 opacity-70 hover:opacity-100">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Main 3 Desktop App Cards */}
+      <main className="my-2.5 flex flex-1 flex-col justify-center gap-2.5">
+        {(dashboard?.apps ?? []).map((snap) => {
+          const upd = updates[snap.id];
+          const progress = progressByApp[snap.id];
+          const isBusy = busyApp === snap.id;
+
+          return (
+            <section
+              key={snap.id}
+              className="rounded-xl border border-slate-200/90 bg-white px-3.5 py-2.5 shadow-xs transition dark:border-slate-800 dark:bg-slate-900/90"
+            >
+              <div className="flex items-center justify-between gap-3">
+                {/* Left metadata */}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-sm font-semibold">{snap.name}</h2>
+                    {snap.install.installed ? (
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                        {snap.install.version ? `v${snap.install.version}` : "已安装"}
+                      </span>
+                    ) : (
+                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/50 dark:text-amber-200">
+                        未安装
+                      </span>
+                    )}
+                    {snap.running && (
+                      <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        运行中
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="mt-1 flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                    <span>
+                      MCP:{" "}
+                      <strong className="font-medium text-slate-700 dark:text-slate-200">
+                        {snap.mcpEnabled ? "已注入" : "未开启"}
+                      </strong>
+                    </span>
+                    <span>·</span>
+                    <button
+                      onClick={() => handleDiagnose(snap)}
+                      className="inline-flex items-center gap-0.5 text-slate-500 underline-offset-2 hover:text-sky-600 hover:underline dark:text-slate-400 dark:hover:text-sky-400"
+                    >
+                      <Activity className="h-3 w-3" />
+                      {snap.diagnostic.ok ? "配置正常" : "需检查"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Right controls: 3-mode segmented pill + action buttons */}
+                <div className="flex shrink-0 items-center gap-2">
+                  <div className="inline-flex rounded-lg bg-slate-100 p-0.5 dark:bg-slate-800">
+                    {MODES.map((m) => {
+                      const active = snap.mode === m.id;
+                      return (
+                        <button
+                          key={m.id}
+                          title={m.tip}
+                          disabled={isBusy}
+                          onClick={() => handleModeSwitch(snap.id, m.id)}
+                          className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                            active
+                              ? m.id === "tako"
+                                ? "bg-sky-600 text-white shadow-xs"
+                                : m.id === "hybrid"
+                                  ? "bg-white text-sky-700 shadow-xs dark:bg-slate-700 dark:text-sky-300"
+                                  : "bg-white text-slate-900 shadow-xs dark:bg-slate-700 dark:text-white"
+                              : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+                          }`}
+                        >
+                          {m.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Install / Upgrade */}
+                  {!snap.install.installed && upd?.platformSupported && (
+                    <button
+                      disabled={isBusy}
+                      onClick={() => handleInstallOrUpgrade(snap.id)}
+                      className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-emerald-500 disabled:opacity-60"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      一键安装
+                    </button>
+                  )}
+
+                  {snap.install.installed && upd?.hasUpdate && upd.remoteVersion && (
+                    <button
+                      disabled={isBusy}
+                      onClick={() => handleInstallOrUpgrade(snap.id)}
+                      className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-1 text-xs font-medium text-white transition hover:bg-amber-400 disabled:opacity-60"
+                    >
+                      <Download className="h-3 w-3" />
+                      升级 v{upd.remoteVersion}
+                    </button>
+                  )}
+
+                  {snap.install.installed && (
+                    <button
+                      disabled={isBusy}
+                      onClick={() => handleRestartOrLaunch(snap)}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                    >
+                      {snap.running ? (
+                        <>
+                          <RotateCw className="h-3 w-3" />
+                          重启生效
+                        </>
+                      ) : (
+                        <>
+                          <ExternalLink className="h-3 w-3" />
+                          打开
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {progress && (
+                <div className="mt-2">
+                  <div className="mb-0.5 flex justify-between text-[10px] text-slate-500 dark:text-slate-400">
+                    <span>{progress.message}</span>
+                    <span className="tabular-nums">{progress.percent}%</span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+                    <div
+                      className="h-full bg-sky-500 transition-all duration-200"
+                      style={{ width: `${progress.percent}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </main>
+
+      {/* Bottom Compact Tako Super MCP Bar */}
+      <footer className="rounded-xl border border-slate-200/90 bg-white px-3.5 py-2 shadow-xs dark:border-slate-800 dark:bg-slate-900/90">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5 text-sky-500" />
+            <span className="text-xs font-semibold">Tako 超级 MCP</span>
+            <span className="text-[11px] text-slate-400">
+              “聚合 / Tako”自动接入，开关即时生效
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {MCP_TOOLS.map((tool) => {
+              const on = dashboard?.state.mcp[tool.key] ?? true;
+              return (
+                <button
+                  key={tool.key}
+                  onClick={() => handleToggleMcpTool(tool.key)}
+                  className={`rounded-md border px-2 py-0.5 text-[11px] font-medium transition ${
+                    on
+                      ? "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950/70 dark:text-sky-300"
+                      : "border-slate-200 bg-slate-50 text-slate-400 line-through dark:border-slate-800 dark:bg-slate-950 dark:text-slate-500"
+                  }`}
+                >
+                  {tool.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </footer>
+
+      {/* Manual Key Modal */}
+      {showKeyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-xs">
+          <form
+            onSubmit={handleKeySubmit}
+            className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-800 dark:bg-slate-900"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold">手动填入 Tako Key</h3>
+              <button
+                type="button"
+                onClick={() => setShowKeyModal(false)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <input
+              type="password"
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              placeholder="cr_..."
+              autoFocus
+              className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowKeyModal(false)}
+                className="rounded-md px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                disabled={authBusy}
+                className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-60"
+              >
+                {authBusy ? "验证中…" : "验证并保存"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-xs">
+          <form
+            onSubmit={handleSaveSettings}
+            className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-800 dark:bg-slate-900"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold">高级设置</h3>
+              <button
+                type="button"
+                onClick={() => setShowSettingsModal(false)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2.5 text-xs">
+              <label className="block">
+                <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
+                  Tako 网关地址
+                </span>
+                <input
+                  value={settingsForm.baseUrl}
+                  onChange={(e) =>
+                    setSettingsForm((s) => ({ ...s, baseUrl: e.target.value }))
+                  }
+                  className="w-full rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950"
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
+                  专用反重力 Key (留空则复用主 Key)
+                </span>
+                <input
+                  type="password"
+                  value={settingsForm.agyApiKey}
+                  placeholder="可选，例如 cr_..."
+                  onChange={(e) =>
+                    setSettingsForm((s) => ({ ...s, agyApiKey: e.target.value }))
+                  }
+                  className="w-full rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950"
+                />
+              </label>
+
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
+                    生图/视频输出目录
+                  </span>
+                  <input
+                    value={settingsForm.outputDir}
+                    onChange={(e) =>
+                      setSettingsForm((s) => ({ ...s, outputDir: e.target.value }))
+                    }
+                    className="w-full rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
+                    外脑默认模型
+                  </span>
+                  <input
+                    value={settingsForm.consultModel}
+                    onChange={(e) =>
+                      setSettingsForm((s) => ({ ...s, consultModel: e.target.value }))
+                    }
+                    className="w-full rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950"
+                  />
+                </label>
+              </div>
+
+              <label className="block">
+                <span className="mb-1 block font-medium text-slate-600 dark:text-slate-300">
+                  国内镜像 Manifest URL
+                </span>
+                <input
+                  value={settingsForm.manifestUrl}
+                  onChange={(e) =>
+                    setSettingsForm((s) => ({ ...s, manifestUrl: e.target.value }))
+                  }
+                  className="w-full rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 outline-none focus:border-sky-500 dark:border-slate-700 dark:bg-slate-950"
+                />
+              </label>
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowSettingsModal(false)}
+                className="rounded-md px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
+              >
+                保存设置
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Diagnostic Modal */}
+      {diagModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-sm font-semibold">{diagModal.name} 配置诊断</h3>
+              <button
+                onClick={() => setDiagModal(null)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-2 text-xs">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`rounded px-2 py-0.5 font-medium ${
+                    diagModal.result.ok
+                      ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200"
+                      : "bg-rose-100 text-rose-800 dark:bg-rose-900/50 dark:text-rose-200"
+                  }`}
+                >
+                  {diagModal.result.ok ? "检查通过" : "发现异常"}
+                </span>
+                <span className="text-slate-500">
+                  {diagModal.hasBackup ? "已保留首次无损备份" : "尚未写入过修改"}
+                </span>
+              </div>
+              {diagModal.result.issues.length > 0 && (
+                <ul className="list-disc space-y-1 pl-4 text-rose-600 dark:text-rose-400">
+                  {diagModal.result.issues.map((item, idx) => (
+                    <li key={idx}>{item}</li>
+                  ))}
+                </ul>
+              )}
+              {diagModal.result.notes.length > 0 && (
+                <ul className="space-y-1 rounded-lg bg-slate-50 p-2.5 text-[11px] text-slate-600 dark:bg-slate-950 dark:text-slate-400">
+                  {diagModal.result.notes.map((note, idx) => (
+                    <li key={idx} className="break-all">
+                      {note}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,424 +1,467 @@
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::error::AppError;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
-/// 获取用户主目录，带回退和日志
-///
-/// ## Windows 注意事项
-///
-/// - `dirs::home_dir()` 在 Windows 上使用 `SHGetKnownFolderPath(FOLDERID_Profile)`，
-///   返回的是真实用户目录（类似 `C:\\Users\\Alice`），与 v3.10.2 行为一致。
-/// - 不要直接使用 `HOME` 环境变量：它可能由 Git/Cygwin/MSYS 等第三方工具注入，
-///   且不一定等于用户目录，可能导致 `.tako-switch/tako-switch.db` 路径变化，从而“看起来像数据丢失”。
-///
-/// ## 测试隔离
-///
-/// 为了让 Windows CI/本地测试能稳定隔离真实用户数据，可通过 `CC_SWITCH_TEST_HOME`
-/// 显式覆盖 home dir（仅用于测试/调试场景）。
-pub fn get_home_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("CC_SWITCH_TEST_HOME") {
-        let trimmed = home.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
+pub const DEFAULT_TAKO_BASE_URL: &str = "https://tako.shiroha.tech";
+pub const DEFAULT_MANIFEST_URL: &str =
+    "https://dsh-tako-dl.oss-cn-shanghai.aliyuncs.com/tako-switch/manifest.json";
+pub const DEFAULT_FALLBACK_MANIFEST_URL: &str =
+    "https://raw.githubusercontent.com/Barrierml/tako-switch/main/manifest/manifest.json";
+
+#[derive(Debug, Clone)]
+pub struct AppPaths {
+    pub home: PathBuf,
+    pub tako_dir: PathBuf,
+    pub codex_dir: PathBuf,
+    pub claude_1p_dir: PathBuf,
+    pub claude_3p_dir: PathBuf,
+    pub agy_gemini_config_dir: PathBuf,
+    pub launch_agents_dir: PathBuf,
+    pub is_test: bool,
+}
+
+impl AppPaths {
+    pub fn detect() -> Result<Self, String> {
+        let home = std::env::var_os("HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(dirs::home_dir)
+            .ok_or_else(|| "无法解析用户 Home 目录".to_string())?;
+
+        let tako_dir = std::env::var_os("TAKO_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".tako"));
+
+        let codex_dir = std::env::var_os("CODEX_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".codex"));
+
+        let (claude_1p_dir, claude_3p_dir) = detect_claude_dirs(&home);
+        let agy_gemini_config_dir = home.join(".gemini").join("config");
+        let launch_agents_dir = home.join("Library").join("LaunchAgents");
+
+        Ok(Self {
+            home,
+            tako_dir,
+            codex_dir,
+            claude_1p_dir,
+            claude_3p_dir,
+            agy_gemini_config_dir,
+            launch_agents_dir,
+            is_test: false,
+        })
+    }
+
+    pub fn for_test(root: &Path) -> Self {
+        Self {
+            home: root.to_path_buf(),
+            tako_dir: root.join(".tako"),
+            codex_dir: root.join(".codex"),
+            claude_1p_dir: root.join("claude_1p"),
+            claude_3p_dir: root.join("claude_3p"),
+            agy_gemini_config_dir: root.join(".gemini").join("config"),
+            launch_agents_dir: root.join("LaunchAgents"),
+            is_test: true,
         }
     }
 
-    dirs::home_dir().unwrap_or_else(|| {
-        log::warn!("无法获取用户主目录，回退到当前目录");
-        PathBuf::from(".")
-    })
-}
-
-/// 获取 Claude Code 配置目录路径
-pub fn get_claude_config_dir() -> PathBuf {
-    if let Some(custom) = crate::settings::get_claude_override_dir() {
-        return custom;
+    pub fn tako_config_path(&self) -> PathBuf {
+        self.tako_dir.join("config.json")
     }
 
-    get_home_dir().join(".claude")
-}
-
-/// 默认 Claude MCP 配置文件路径 (~/.claude.json)
-pub fn get_default_claude_mcp_path() -> PathBuf {
-    get_home_dir().join(".claude.json")
-}
-
-fn derive_mcp_path_from_override(dir: &Path) -> Option<PathBuf> {
-    let file_name = dir
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())?
-        .trim()
-        .to_string();
-    if file_name.is_empty() {
-        return None;
-    }
-    let parent = dir.parent().unwrap_or_else(|| Path::new(""));
-    Some(parent.join(format!("{file_name}.json")))
-}
-
-/// 获取 Claude MCP 配置文件路径，若设置了目录覆盖则与覆盖目录同级
-pub fn get_claude_mcp_path() -> PathBuf {
-    if let Some(custom_dir) = crate::settings::get_claude_override_dir() {
-        if let Some(path) = derive_mcp_path_from_override(&custom_dir) {
-            return path;
-        }
-    }
-    get_default_claude_mcp_path()
-}
-
-/// 获取 Claude Code 主配置文件路径
-pub fn get_claude_settings_path() -> PathBuf {
-    let dir = get_claude_config_dir();
-    let settings = dir.join("settings.json");
-    if settings.exists() {
-        return settings;
-    }
-    // 兼容旧版命名：若存在旧文件则继续使用
-    let legacy = dir.join("claude.json");
-    if legacy.exists() {
-        return legacy;
-    }
-    // 默认新建：回落到标准文件名 settings.json（不再生成 claude.json）
-    settings
-}
-
-/// 获取应用配置目录路径 (~/.tako-switch)
-pub fn get_app_config_dir() -> PathBuf {
-    if let Some(custom) = crate::app_store::get_app_config_dir_override() {
-        return custom;
+    pub fn switch_dir(&self) -> PathBuf {
+        self.tako_dir.join("switch")
     }
 
-    let default_dir = get_home_dir().join(".tako-switch");
+    pub fn state_path(&self) -> PathBuf {
+        self.switch_dir().join("state.json")
+    }
 
-    // 兼容 v3.10.3：当用户环境存在 `HOME` 且与真实用户目录不同，
-    // v3.10.3 可能在 `HOME/.tako-switch/` 下创建/使用了数据库。
-    // 这里仅在“默认位置没有数据库”时回退到旧位置，避免再次出现“供应商消失”问题，
-    // 同时也避免新安装因为 `HOME` 被设置而写入非预期路径。
-    #[cfg(windows)]
+    pub fn backups_dir(&self, app_id: &str) -> PathBuf {
+        self.switch_dir().join("backups").join(app_id)
+    }
+
+    pub fn default_media_output_dir(&self) -> PathBuf {
+        self.home.join("Downloads").join("Tako")
+    }
+
+    pub fn mcp_server_exe(&self) -> PathBuf {
+        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tako-switch"))
+    }
+}
+
+fn detect_claude_dirs(home: &Path) -> (PathBuf, PathBuf) {
+    #[cfg(target_os = "macos")]
     {
-        let default_db = default_dir.join("tako-switch.db");
-        if !default_db.exists() {
-            if let Ok(home_env) = std::env::var("HOME") {
-                let trimmed = home_env.trim();
-                if !trimmed.is_empty() {
-                    let legacy_dir = PathBuf::from(trimmed).join(".tako-switch");
-                    if legacy_dir.join("tako-switch.db").exists() {
-                        log::info!(
-                            "Detected v3.10.3 legacy database at {}, using it instead of {}",
-                            legacy_dir.display(),
-                            default_dir.display()
-                        );
-                        return legacy_dir;
-                    }
+        let app_support = home.join("Library").join("Application Support");
+        (app_support.join("Claude"), app_support.join("Claude-3p"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let local_app_data = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData").join("Local"));
+        let roaming_app_data = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData").join("Roaming"));
+
+        // Windows 1p: prefer MSIX LocalCache\Roaming\Claude when present, else %APPDATA%\Claude.
+        let msix_candidates = ["Claude_pzs8sxrjxfjjc", "AnthropicPBC.Claude_fnn82j28hfe8t"];
+        let one_p = msix_candidates
+            .iter()
+            .map(|pfn| {
+                local_app_data
+                    .join("Packages")
+                    .join(pfn)
+                    .join("LocalCache")
+                    .join("Roaming")
+                    .join("Claude")
+            })
+            .find(|p| p.exists())
+            .unwrap_or_else(|| roaming_app_data.join("Claude"));
+
+        // Per Claude Desktop index.pre.js su(): 3p on Windows always resolves to %LOCALAPPDATA%\Claude-3p.
+        (one_p, local_app_data.join("Claude-3p"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let cfg = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".config"));
+        (cfg.join("Claude"), cfg.join("Claude-3p"))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolsConfig {
+    pub image: bool,
+    pub video: bool,
+    pub audio: bool,
+    pub search: bool,
+    pub consult: bool,
+    pub output_dir: String,
+    pub consult_model: String,
+}
+
+impl McpToolsConfig {
+    pub fn with_default_dir(paths: &AppPaths) -> Self {
+        Self {
+            image: true,
+            video: true,
+            audio: true,
+            search: true,
+            consult: true,
+            output_dir: paths.default_media_output_dir().to_string_lossy().to_string(),
+            consult_model: "gpt-5.4".to_string(),
+        }
+    }
+}
+
+impl Default for McpToolsConfig {
+    fn default() -> Self {
+        Self {
+            image: true,
+            video: true,
+            audio: true,
+            search: true,
+            consult: true,
+            output_dir: "~/Downloads/Tako".to_string(),
+            consult_model: "gpt-5.4".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchState {
+    pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agy_api_key: Option<String>,
+    pub manifest_url: String,
+    pub fallback_manifest_url: String,
+    pub auto_check_updates: bool,
+    #[serde(default)]
+    pub mcp: McpToolsConfig,
+}
+
+impl SwitchState {
+    pub fn default_for(paths: &AppPaths) -> Self {
+        Self {
+            base_url: DEFAULT_TAKO_BASE_URL.to_string(),
+            agy_api_key: None,
+            manifest_url: DEFAULT_MANIFEST_URL.to_string(),
+            fallback_manifest_url: DEFAULT_FALLBACK_MANIFEST_URL.to_string(),
+            auto_check_updates: true,
+            mcp: McpToolsConfig::with_default_dir(paths),
+        }
+    }
+
+    pub fn normalized_base_url(&self) -> String {
+        let trimmed = self.base_url.trim().trim_end_matches('/');
+        if let Some(stripped) = trimmed.strip_suffix("/v1") {
+            stripped.to_string()
+        } else if trimmed.is_empty() {
+            DEFAULT_TAKO_BASE_URL.to_string()
+        } else {
+            trimmed.to_string()
+        }
+    }
+}
+
+pub fn write_atomic(path: &Path, content: &[u8], secret_mode: bool) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("路径缺少父目录: {}", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("创建目录 {} 失败: {e}", parent.display()))?;
+
+    let nonce: u32 = rand::thread_rng().gen();
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("config");
+    let tmp_path = parent.join(format!(".{file_name}.tmp.{}.{}", std::process::id(), nonce));
+
+    fs::write(&tmp_path, content)
+        .map_err(|e| format!("写入临时文件 {} 失败: {e}", tmp_path.display()))?;
+
+    #[cfg(unix)]
+    if secret_mode {
+        let perms = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(&tmp_path, perms)
+            .map_err(|e| format!("设置权限 {} 失败: {e}", tmp_path.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = secret_mode;
+
+    // On Windows fs::rename fails if destination exists when using some filesystems; std handles replace cleanly on modern Rust, fallback remove+rename if needed.
+    if let Err(err) = fs::rename(&tmp_path, path) {
+        #[cfg(windows)]
+        {
+            if path.exists() {
+                let _ = fs::remove_file(path);
+                if fs::rename(&tmp_path, path).is_ok() {
+                    return Ok(());
                 }
             }
         }
-    }
-
-    default_dir
-}
-
-/// 获取应用配置文件路径
-pub fn get_app_config_path() -> PathBuf {
-    get_app_config_dir().join("config.json")
-}
-
-/// 清理供应商名称，确保文件名安全
-#[allow(dead_code)]
-pub fn sanitize_provider_name(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '-',
-            _ => c,
-        })
-        .collect::<String>()
-        .to_lowercase()
-}
-
-/// 获取供应商配置文件路径
-#[allow(dead_code)]
-pub fn get_provider_config_path(provider_id: &str, provider_name: Option<&str>) -> PathBuf {
-    let base_name = provider_name
-        .map(sanitize_provider_name)
-        .unwrap_or_else(|| sanitize_provider_name(provider_id));
-
-    get_claude_config_dir().join(format!("settings-{base_name}.json"))
-}
-
-/// 读取 JSON 配置文件
-pub fn read_json_file<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T, AppError> {
-    if !path.exists() {
-        return Err(AppError::Config(format!("文件不存在: {}", path.display())));
-    }
-
-    let content = fs::read_to_string(path).map_err(|e| AppError::io(path, e))?;
-
-    serde_json::from_str(&content).map_err(|e| AppError::json(path, e))
-}
-
-/// 递归排序 JSON 对象的键（按字母顺序），确保序列化输出是确定性的
-fn sort_json_keys(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut sorted_map = Map::new();
-            let mut keys: Vec<_> = map.keys().collect();
-            keys.sort();
-            for key in keys {
-                sorted_map.insert(key.clone(), sort_json_keys(&map[key]));
-            }
-            Value::Object(sorted_map)
-        }
-        Value::Array(arr) => Value::Array(arr.iter().map(sort_json_keys).collect()),
-        other => other.clone(),
-    }
-}
-
-/// 写入 JSON 配置文件（键按字母排序，确保确定性输出）
-pub fn write_json_file<T: Serialize>(path: &Path, data: &T) -> Result<(), AppError> {
-    // 确保目录存在
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    }
-
-    let value = serde_json::to_value(data).map_err(|e| AppError::JsonSerialize { source: e })?;
-    let sorted_value = sort_json_keys(&value);
-    let json = serde_json::to_string_pretty(&sorted_value)
-        .map_err(|e| AppError::JsonSerialize { source: e })?;
-
-    atomic_write(path, json.as_bytes())
-}
-
-/// 原子写入文本文件（用于 TOML/纯文本）
-pub fn write_text_file(path: &Path, data: &str) -> Result<(), AppError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    }
-    atomic_write(path, data.as_bytes())
-}
-
-/// 原子写入：写入临时文件后 rename 替换，避免半写状态
-pub fn atomic_write(path: &Path, data: &[u8]) -> Result<(), AppError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
-    }
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| AppError::Config("无效的路径".to_string()))?;
-    let mut tmp = parent.to_path_buf();
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| AppError::Config("无效的文件名".to_string()))?
-        .to_string_lossy()
-        .to_string();
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    tmp.push(format!("{file_name}.tmp.{ts}"));
-
-    {
-        let mut f = fs::File::create(&tmp).map_err(|e| AppError::io(&tmp, e))?;
-        f.write_all(data).map_err(|e| AppError::io(&tmp, e))?;
-        f.flush().map_err(|e| AppError::io(&tmp, e))?;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = fs::metadata(path) {
-            let perm = meta.permissions().mode();
-            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(perm));
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        // Windows 上 rename 目标存在会失败，先移除再重命名（尽量接近原子性）
-        if path.exists() {
-            let _ = fs::remove_file(path);
-        }
-        fs::rename(&tmp, path).map_err(|e| AppError::IoContext {
-            context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
-            source: e,
-        })?;
-    }
-
-    #[cfg(not(windows))]
-    {
-        fs::rename(&tmp, path).map_err(|e| AppError::IoContext {
-            context: format!("原子替换失败: {} -> {}", tmp.display(), path.display()),
-            source: e,
-        })?;
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!("原子替换 {} 失败: {err}", path.display()));
     }
     Ok(())
+}
+
+pub fn read_tako_cli_config(paths: &AppPaths) -> Result<Map<String, Value>, String> {
+    let path = paths.tako_config_path();
+    if !path.exists() {
+        return Ok(Map::new());
+    }
+    let raw = fs::read_to_string(&path)
+        .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+    if raw.trim().is_empty() {
+        return Ok(Map::new());
+    }
+    let parsed: Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
+    parsed
+        .as_object()
+        .cloned()
+        .ok_or_else(|| format!("{} 顶层必须是 JSON object", path.display()))
+}
+
+pub fn save_tako_cli_credentials(
+    paths: &AppPaths,
+    api_key: Option<&str>,
+    api_id: Option<&str>,
+) -> Result<(), String> {
+    let mut map = read_tako_cli_config(paths)?;
+    match api_key.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(k) => {
+            map.insert("apiKey".to_string(), Value::String(k.to_string()));
+        }
+        None => {
+            map.remove("apiKey");
+        }
+    }
+    match api_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id) => {
+            map.insert("apiId".to_string(), Value::String(id.to_string()));
+        }
+        None => {
+            map.remove("apiId");
+        }
+    }
+    let serialized = serde_json::to_vec_pretty(&Value::Object(map))
+        .map_err(|e| format!("序列化 Tako 配置失败: {e}"))?;
+    write_atomic(&paths.tako_config_path(), &serialized, true)
+}
+
+pub fn read_main_api_key(paths: &AppPaths) -> Option<String> {
+    read_tako_cli_config(paths).ok().and_then(|m| {
+        m.get("apiKey")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    })
+}
+
+pub fn read_main_api_id(paths: &AppPaths) -> Option<String> {
+    read_tako_cli_config(paths).ok().and_then(|m| {
+        m.get("apiId")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    })
+}
+
+pub fn read_switch_state(paths: &AppPaths) -> SwitchState {
+    let path = paths.state_path();
+    let default = SwitchState::default_for(paths);
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return default;
+    };
+    let Ok(mut state) = serde_json::from_str::<SwitchState>(&raw) else {
+        return default;
+    };
+    if state.base_url.trim().is_empty() {
+        state.base_url = default.base_url;
+    }
+    if state.manifest_url.trim().is_empty() {
+        state.manifest_url = default.manifest_url;
+    }
+    if state.fallback_manifest_url.trim().is_empty() {
+        state.fallback_manifest_url = default.fallback_manifest_url;
+    }
+    if state.mcp.output_dir.trim().is_empty() {
+        state.mcp.output_dir = default.mcp.output_dir;
+    }
+    if state.mcp.consult_model.trim().is_empty() {
+        state.mcp.consult_model = default.mcp.consult_model;
+    }
+    state
+}
+
+pub fn save_switch_state(paths: &AppPaths, state: &SwitchState) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(state)
+        .map_err(|e| format!("序列化 switch state 失败: {e}"))?;
+    write_atomic(&paths.state_path(), &bytes, true)
+}
+
+pub fn effective_agy_api_key(paths: &AppPaths) -> Option<String> {
+    let state = read_switch_state(paths);
+    state
+        .agy_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| read_main_api_key(paths))
+}
+
+pub fn resolve_output_dir(paths: &AppPaths, raw_dir: &str) -> PathBuf {
+    let trimmed = raw_dir.trim();
+    if trimmed.is_empty() {
+        return paths.default_media_output_dir();
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return paths.home.join(rest);
+    }
+    if trimmed == "~" {
+        return paths.home.clone();
+    }
+    PathBuf::from(trimmed)
+}
+
+pub fn backup_file_once(
+    paths: &AppPaths,
+    app_id: &str,
+    backup_key: &str,
+    src_path: &Path,
+) -> Result<(), String> {
+    let bdir = paths.backups_dir(app_id);
+    let bfile = bdir.join(backup_key);
+    let missing_marker = bdir.join(format!("{backup_key}.absent"));
+    if bfile.exists() || missing_marker.exists() {
+        return Ok(());
+    }
+    if src_path.exists() {
+        let bytes = fs::read(src_path)
+            .map_err(|e| format!("读取待备份文件 {} 失败: {e}", src_path.display()))?;
+        write_atomic(&bfile, &bytes, true)
+    } else {
+        write_atomic(&missing_marker, b"absent", false)
+    }
+}
+
+pub fn read_backup(paths: &AppPaths, app_id: &str, backup_key: &str) -> Option<Vec<u8>> {
+    let bfile = paths.backups_dir(app_id).join(backup_key);
+    fs::read(bfile).ok()
+}
+
+pub fn has_backup(paths: &AppPaths, app_id: &str) -> bool {
+    let bdir = paths.backups_dir(app_id);
+    fs::read_dir(bdir)
+        .map(|mut rd| rd.next().is_some())
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
-    fn derive_mcp_path_from_override_preserves_folder_name() {
-        let override_dir = PathBuf::from("/tmp/profile/.claude");
-        let derived = derive_mcp_path_from_override(&override_dir)
-            .expect("should derive path for nested dir");
-        assert_eq!(derived, PathBuf::from("/tmp/profile/.claude.json"));
+    fn preserves_tako_cli_fields_on_credential_update() {
+        let tmp = TempDir::new().unwrap();
+        let paths = AppPaths::for_test(tmp.path());
+        fs::create_dir_all(&paths.tako_dir).unwrap();
+        fs::write(
+            paths.tako_config_path(),
+            r#"{
+              "installedClients": {"agy": {"version": "0.3.60"}},
+              "recentProjects": [{"path": "/tmp/foo", "launchCount": 3}],
+              "clientProviderMap": {"codex": "tako"}
+            }"#,
+        )
+        .unwrap();
+
+        save_tako_cli_credentials(&paths, Some("cr_test_key_123"), Some("7")).unwrap();
+        let loaded = read_tako_cli_config(&paths).unwrap();
+        assert_eq!(loaded.get("apiKey").and_then(Value::as_str), Some("cr_test_key_123"));
+        assert_eq!(loaded.get("apiId").and_then(Value::as_str), Some("7"));
+        assert!(loaded.get("installedClients").is_some());
+        assert!(loaded.get("recentProjects").is_some());
+        assert!(loaded.get("clientProviderMap").is_some());
+
+        save_tako_cli_credentials(&paths, None, None).unwrap();
+        let cleared = read_tako_cli_config(&paths).unwrap();
+        assert!(cleared.get("apiKey").is_none());
+        assert!(cleared.get("recentProjects").is_some());
     }
 
     #[test]
-    fn derive_mcp_path_from_override_handles_non_hidden_folder() {
-        let override_dir = PathBuf::from("/data/claude-config");
-        let derived = derive_mcp_path_from_override(&override_dir)
-            .expect("should derive path for standard dir");
-        assert_eq!(derived, PathBuf::from("/data/claude-config.json"));
-    }
+    fn agy_key_falls_back_to_main_key() {
+        let tmp = TempDir::new().unwrap();
+        let paths = AppPaths::for_test(tmp.path());
+        save_tako_cli_credentials(&paths, Some("cr_main_key"), Some("1")).unwrap();
+        assert_eq!(effective_agy_api_key(&paths).as_deref(), Some("cr_main_key"));
 
-    #[test]
-    fn derive_mcp_path_from_override_supports_relative_rootless_dir() {
-        let override_dir = PathBuf::from("claude");
-        let derived = derive_mcp_path_from_override(&override_dir)
-            .expect("should derive path for single segment");
-        assert_eq!(derived, PathBuf::from("claude.json"));
-    }
-
-    #[test]
-    fn derive_mcp_path_from_root_like_dir_returns_none() {
-        let override_dir = PathBuf::from("/");
-        assert!(derive_mcp_path_from_override(&override_dir).is_none());
-    }
-
-    #[test]
-    fn sort_json_keys_sorts_top_level_object() {
-        let input = serde_json::json!({
-            "z": 1,
-            "a": 2,
-            "m": 3,
-        });
-        let sorted = sort_json_keys(&input);
-        let serialized = serde_json::to_string(&sorted).unwrap();
-        assert_eq!(serialized, r#"{"a":2,"m":3,"z":1}"#);
-    }
-
-    #[test]
-    fn sort_json_keys_recurses_into_nested_objects() {
-        let input = serde_json::json!({
-            "outer_b": {"z": 1, "a": 2},
-            "outer_a": {"y": 3, "b": 4},
-        });
-        let sorted = sort_json_keys(&input);
-        let serialized = serde_json::to_string(&sorted).unwrap();
+        let mut st = read_switch_state(&paths);
+        st.agy_api_key = Some("cr_dedicated_agy".to_string());
+        save_switch_state(&paths, &st).unwrap();
         assert_eq!(
-            serialized,
-            r#"{"outer_a":{"b":4,"y":3},"outer_b":{"a":2,"z":1}}"#
+            effective_agy_api_key(&paths).as_deref(),
+            Some("cr_dedicated_agy")
         );
-    }
-
-    #[test]
-    fn sort_json_keys_preserves_array_order() {
-        let input = serde_json::json!([3, 1, 2]);
-        let sorted = sort_json_keys(&input);
-        let serialized = serde_json::to_string(&sorted).unwrap();
-        assert_eq!(serialized, "[3,1,2]");
-    }
-
-    #[test]
-    fn sort_json_keys_sorts_objects_inside_arrays_but_keeps_array_order() {
-        let input = serde_json::json!([
-            {"z": 1, "a": 2},
-            {"y": 3, "b": 4},
-        ]);
-        let sorted = sort_json_keys(&input);
-        let serialized = serde_json::to_string(&sorted).unwrap();
-        assert_eq!(serialized, r#"[{"a":2,"z":1},{"b":4,"y":3}]"#);
-    }
-
-    #[test]
-    fn sort_json_keys_passes_through_primitives() {
-        let cases = vec![
-            serde_json::json!("hello"),
-            serde_json::json!(42),
-            serde_json::json!(3.5),
-            serde_json::json!(true),
-            serde_json::json!(null),
-        ];
-        for value in cases {
-            let sorted = sort_json_keys(&value);
-            assert_eq!(sorted, value);
-        }
-    }
-
-    #[test]
-    fn sort_json_keys_handles_empty_collections() {
-        let empty_obj = serde_json::json!({});
-        assert_eq!(
-            serde_json::to_string(&sort_json_keys(&empty_obj)).unwrap(),
-            "{}"
-        );
-
-        let empty_arr = serde_json::json!([]);
-        assert_eq!(
-            serde_json::to_string(&sort_json_keys(&empty_arr)).unwrap(),
-            "[]"
-        );
-    }
-
-    #[test]
-    fn sort_json_keys_produces_identical_output_for_different_insertion_orders() {
-        // 核心保证：同一逻辑配置无论键的插入顺序如何，写出的字节序列必须一致。
-        let mut a = Map::new();
-        a.insert("env".to_string(), serde_json::json!({"PATH": "/usr/bin"}));
-        a.insert("model".to_string(), serde_json::json!("claude-sonnet-4-5"));
-        a.insert("permissions".to_string(), serde_json::json!({"allow": []}));
-
-        let mut b = Map::new();
-        b.insert("permissions".to_string(), serde_json::json!({"allow": []}));
-        b.insert("model".to_string(), serde_json::json!("claude-sonnet-4-5"));
-        b.insert("env".to_string(), serde_json::json!({"PATH": "/usr/bin"}));
-
-        let sorted_a = sort_json_keys(&Value::Object(a));
-        let sorted_b = sort_json_keys(&Value::Object(b));
-
-        assert_eq!(
-            serde_json::to_string(&sorted_a).unwrap(),
-            serde_json::to_string(&sorted_b).unwrap(),
-        );
-    }
-}
-
-/// 复制文件
-pub fn copy_file(from: &Path, to: &Path) -> Result<(), AppError> {
-    fs::copy(from, to).map_err(|e| AppError::IoContext {
-        context: format!("复制文件失败 ({} -> {})", from.display(), to.display()),
-        source: e,
-    })?;
-    Ok(())
-}
-
-/// 删除文件
-pub fn delete_file(path: &Path) -> Result<(), AppError> {
-    if path.exists() {
-        fs::remove_file(path).map_err(|e| AppError::io(path, e))?;
-    }
-    Ok(())
-}
-
-/// 检查 Claude Code 配置状态
-#[derive(Serialize, Deserialize)]
-pub struct ConfigStatus {
-    pub exists: bool,
-    pub path: String,
-}
-
-/// 获取 Claude Code 配置状态
-pub fn get_claude_config_status() -> ConfigStatus {
-    let path = get_claude_settings_path();
-    ConfigStatus {
-        exists: path.exists(),
-        path: path.to_string_lossy().to_string(),
     }
 }
